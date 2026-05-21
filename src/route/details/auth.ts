@@ -12,12 +12,13 @@ import {
   forceLogoutAllController
 } from '../../controller/auth-controller'
 import { authRequired } from '../../middleware/auth-middleware'
+import { loginLimiter } from '../../middleware/rate-limit'
 import { FRONTEND_URL } from '../../config'
 
 const router = Router()
 
 // Public (kredensial = cookie refresh_token)
-router.post('/login', loginController)
+router.post('/login', loginLimiter, loginController)
 router.post('/refresh', refreshController)
 router.post('/activity', activityController)
 router.delete('/logout', logoutController)
