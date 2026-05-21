@@ -125,6 +125,13 @@ export const loginService = async (request: LoginRequest, ipAddress: string | nu
     await prismaClient.user.update({ where: { id: user.id }, data: { failedLogins: 0 } })
   }
 
+  // Cek status setelah password benar — user nonaktif tidak boleh punya sesi.
+  // Tanpa ini login sukses tapi tiap request API kena 403 di authRequired → loading tak berujung di FE.
+  if (user.status === 'inactive') {
+    auditAuth({ action: 'LOGIN_FAILED', email: user.email, userId: user.id, ip: ipAddress, userAgent, detail: 'account_inactive' })
+    throw new ResponseError(403, 'Akun Anda nonaktif. Hubungi Super Admin.', 'ACCOUNT_INACTIVE')
+  }
+
   await pruneAndEnforce(user.id)
   const result = await createSessionForUser(user, ipAddress, userAgent, res)
   auditAuth({ action: 'LOGIN_SUCCESS', email: user.email, userId: user.id, ip: ipAddress, userAgent })
@@ -139,6 +146,11 @@ export const loginGoogleService = async (googleUser: any, ipAddress: string | nu
   if (!user) {
     auditAuth({ action: 'LOGIN_FAILED', email: googleUser?.email, ip: ipAddress, userAgent, detail: 'google_unregistered' })
     throw new ResponseError(401, 'User not found', 'UNAUTHORIZED')
+  }
+
+  if (user.status === 'inactive') {
+    auditAuth({ action: 'LOGIN_FAILED', email: user.email, userId: user.id, ip: ipAddress, userAgent, detail: 'account_inactive' })
+    throw new ResponseError(403, 'Akun Anda nonaktif. Hubungi Super Admin.', 'ACCOUNT_INACTIVE')
   }
 
   await pruneAndEnforce(user.id)
