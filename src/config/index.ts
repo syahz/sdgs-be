@@ -1,0 +1,19 @@
+import { config } from 'dotenv'
+
+config({ path: '.env' })
+
+export const {
+  PORT,
+  LOG_DIR,
+  FRONTEND_URL,
+  NODE_ENV,
+  ACCESS_TOKEN_SECRET,
+  ACCESS_TOKEN_EXPIRES,
+  REFRESH_TOKEN_SECRET,
+  REFRESH_TOKEN_EXPIRES_SECONDS,
+  IDLE_TIMEOUT_SECONDS,
+  COOKIE_DOMAIN,
+  BASE_URL,
+  GOOGLE_CLIENT_ID,
+  GOOGLE_CLIENT_SECRET
+} = process.env

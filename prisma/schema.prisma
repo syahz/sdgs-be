@@ -1,0 +1,276 @@
+// ============================================================
+// SDGs Dashboard — Prisma Schema (PostgreSQL)
+// ------------------------------------------------------------
+// Target: BE-SDGS standalone (Express + Prisma + PostgreSQL)
+// Auth   : Google OAuth2 (passport-google-oauth20) + JWT rotation
+// Acuan  : Referensi/db.json (entitas) + struktur BE/prisma/schema.prisma
+//
+// Daftar indikator SDG (THE/QS) TIDAK disimpan di DB — tetap hardcoded
+// di file config. `sdgId` (1-17) hanya integer rujukan ke config tsb.
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────── ENUMS ───────────────
+
+enum UserRole {
+  super_admin
+  validator
+  unit_admin // admin unit kerja (fakultas/direktorat/unit) — pengganti "faculty_admin"
+  pimpinan
+}
+
+enum UserStatus {
+  active
+  inactive
+}
+
+// Jenis unit kerja yang melakukan submission SDG
+enum OrgUnitType {
+  faculty // Fakultas
+  directorate // Direktorat
+  unit // Unit / lembaga universitas lainnya
+}
+
+enum SubmissionStatus {
+  draft
+  submitted
+  under_review
+  revision
+  resubmitted
+  approved
+  rejected
+}
+
+enum ReviewAction {
+  comment
+  request_revision
+  approve
+  reject
+}
+
+enum RecordStatus {
+  draft
+  published
+}
+
+// Event yang dicatat di SubmissionLog (jejak audit submission)
+enum SubmissionEvent {
+  created
+  updated
+  submitted
+  review_started
+  revision_requested
+  resubmitted
+  approved
+  rejected
+}
+
+// ─────────────── MASTER: ORG UNIT (fakultas/direktorat/unit) ───────────────
+
+model OrgUnit {
+  id           String      @id @default(uuid())
+  name         String      @unique // "Faculty of Law", "Direktorat Keuangan"
+  abbreviation String // "FH", "DITKEU"
+  type         OrgUnitType @default(faculty)
+
+  users       User[]
+  submissions Submission[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([type])
+  @@map("org_units")
+}
+
+// ─────────────── USER ───────────────
+
+model User {
+  id             String     @id @default(uuid())
+  name           String
+  email          String     @unique
+  password       String? // null = user Google-only (login OAuth saja)
+  role           UserRole
+  avatarInitials String
+  status         UserStatus @default(active)
+
+  // unit_admin wajib punya orgUnit; role lain null
+  orgUnitId String?
+  orgUnit   OrgUnit? @relation(fields: [orgUnitId], references: [id])
+
+  // proteksi brute-force (pola BE/)
+  failedLogins Int     @default(0)
+  isLocked     Boolean @default(false)
+
+  submissions       Submission[]       @relation("SubmittedBy")
+  reviewComments    ReviewComment[]
+  universityRecords UniversityRecord[]
+  submissionLogs    SubmissionLog[]    @relation("SubmissionLogActor")
+  refreshTokens     RefreshToken[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([role])
+  @@map("users")
+}
+
+// ─────────────── SUBMISSION (data SDG per unit kerja) ───────────────
+
+model Submission {
+  id            String           @id @default(uuid())
+  title         String
+  sdgId         Int // 1-17 — rujuk THE_SDG_CONFIG (hardcoded)
+  year          Int
+  status        SubmissionStatus @default(draft)
+  points        Float            @default(0) // skor hasil scoring engine
+  revisionCount Int              @default(0)
+
+  orgUnitId String
+  orgUnit   OrgUnit @relation(fields: [orgUnitId], references: [id])
+
+  submittedByUserId String
+  submittedBy       User   @relation("SubmittedBy", fields: [submittedByUserId], references: [id])
+
+  submittedAt DateTime? // null saat masih draft
+
+  // Jawaban indikator — JSON. Key "THE_1_2_1" / "QS_13_1".
+  theAnswers Json @default("{}")
+  qsAnswers  Json @default("{}")
+  fileNames  Json @default("{}")
+
+  reviewComments ReviewComment[]
+  logs           SubmissionLog[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // satu submission per unit per SDG per tahun (resubmit = update row, riwayat di SubmissionLog)
+  @@unique([orgUnitId, sdgId, year])
+  @@index([status])
+  @@index([orgUnitId])
+  @@index([year])
+  @@map("submissions")
+}
+
+// ─────────────── SUBMISSION LOG (jejak audit / riwayat) ───────────────
+
+model SubmissionLog {
+  id String @id @default(uuid())
+
+  submissionId String
+  submission   Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  event      SubmissionEvent
+  fromStatus SubmissionStatus?
+  toStatus   SubmissionStatus?
+
+  actorUserId String
+  actor       User   @relation("SubmissionLogActor", fields: [actorUserId], references: [id])
+
+  note     String? @db.Text
+  // snapshot opsional: jawaban + skor saat event terjadi (untuk lihat riwayat revisi)
+  snapshot Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([submissionId])
+  @@index([event])
+  @@map("submission_logs")
+}
+
+// ─────────────── REVIEW COMMENT (validasi) ───────────────
+
+model ReviewComment {
+  id String @id @default(uuid())
+
+  submissionId String
+  submission   Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  // null = komentar umum; "1.2.1" = komentar per-indikator
+  questionId String?
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  comment String       @db.Text
+  action  ReviewAction @default(comment)
+
+  createdAt DateTime @default(now())
+
+  @@index([submissionId])
+  @@map("review_comments")
+}
+
+// ─────────────── UNIVERSITY RECORD (data SDG historis tk. universitas) ───────────────
+
+model UniversityRecord {
+  id     String       @id @default(uuid())
+  title  String
+  sdgId  Int
+  year   Int
+  status RecordStatus @default(draft)
+  points Float        @default(0)
+
+  createdByUserId String
+  createdBy       User   @relation(fields: [createdByUserId], references: [id])
+
+  theAnswers Json @default("{}")
+  qsAnswers  Json @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([sdgId, year])
+  @@map("university_records")
+}
+
+// ─────────────── SYSTEM SETTINGS (singleton, id=1) ───────────────
+
+model SystemSettings {
+  id               Int @id @default(1)
+  submissionYear   Int
+  windowStartMonth Int // 1=Jan ... 12=Des
+  windowStartDay   Int
+  windowEndMonth   Int
+  windowEndDay     Int
+
+  updatedAt DateTime @updatedAt
+
+  @@map("system_settings")
+}
+
+// ─────────────── REFRESH TOKEN (JWT rotation — pola BE/) ───────────────
+
+model RefreshToken {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  tokenHash  String  @unique
+  familyId   String? // stabil lintas rotasi — 1 sesi login
+  ipAddress  String?
+  userAgent  String? @db.Text
+  revoked    Boolean @default(false)
+  replacedBy String? // id token pengganti — deteksi reuse
+
+  createdAt  DateTime @default(now())
+  expiresAt  DateTime // batas absolut sesi (30 hari)
+  lastUsedAt DateTime @default(now())
+  // batas idle — sesi mati bila tak ada aktivitas user sampai waktu ini.
+  // hanya digeser oleh POST /auth/activity, bukan rotasi /auth/refresh.
+  idleExpiresAt DateTime
+
+  @@index([userId])
+  @@index([familyId])
+  @@index([idleExpiresAt])
+  @@map("refresh_tokens")
+}

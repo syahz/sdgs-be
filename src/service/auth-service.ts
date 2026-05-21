@@ -1,0 +1,328 @@
+import { Response } from 'express'
+import bcrypt from 'bcryptjs'
+import { randomUUID } from 'crypto'
+import { prismaClient } from '../application/database'
+import { ResponseError } from '../error/response-error'
+import { Validation } from '../validation/Validation'
+import { AuthValidation } from '../validation/auth-validation'
+import { signAccessToken } from '../utils/jwt'
+import { createSessionToken, hashToken } from '../utils/token'
+import { LoginRequest, AuthResponse, toUserPublic } from '../model/auth-model'
+import { REFRESH_TOKEN_EXPIRES_SECONDS, IDLE_TIMEOUT_SECONDS, COOKIE_DOMAIN, NODE_ENV } from '../config'
+import { logger } from '../utils/logger'
+import { auditAuth } from '../utils/audit-logger'
+
+const REFRESH_EXPIRES = Number(REFRESH_TOKEN_EXPIRES_SECONDS ?? 60 * 60 * 24 * 30)
+const MAX_SESSIONS = 5
+/** Idle window — sesi mati bila tak ada aktivitas user selama durasi ini (default 30 menit). */
+const IDLE_TIMEOUT = Number(IDLE_TIMEOUT_SECONDS ?? 1800)
+
+/** Tenggat idle baru: sekarang + IDLE_TIMEOUT. */
+function idleDeadline(): Date {
+  return new Date(Date.now() + IDLE_TIMEOUT * 1000)
+}
+
+function cookieOptions() {
+  const base = {
+    httpOnly: true,
+    secure: NODE_ENV === 'production',
+    sameSite: 'lax' as const,
+    maxAge: REFRESH_EXPIRES * 1000,
+    path: '/'
+  }
+  return COOKIE_DOMAIN ? { ...base, domain: COOKIE_DOMAIN } : base
+}
+
+function cookieOptionsGoogleCallback() {
+  const base = {
+    httpOnly: true,
+    secure: true,
+    sameSite: 'none' as const,
+    maxAge: REFRESH_EXPIRES * 1000,
+    path: '/'
+  }
+  return COOKIE_DOMAIN ? { ...base, domain: COOKIE_DOMAIN } : base
+}
+
+export function clearAuthCookies(res: Response) {
+  const cookiesToClear = ['refresh_token']
+  cookiesToClear.forEach((name) => {
+    res.clearCookie(name, { path: '/' })
+    if (COOKIE_DOMAIN) res.clearCookie(name, { path: '/', domain: COOKIE_DOMAIN })
+  })
+}
+
+async function pruneAndEnforce(userId: string) {
+  await prismaClient.refreshToken.deleteMany({
+    where: { userId, OR: [{ expiresAt: { lt: new Date() } }, { revoked: true }] }
+  })
+
+  const activeSessions = await prismaClient.refreshToken.findMany({
+    where: { userId, revoked: false, expiresAt: { gt: new Date() } },
+    orderBy: { createdAt: 'desc' },
+    select: { id: true }
+  })
+
+  if (activeSessions.length >= MAX_SESSIONS) {
+    const toRemove = activeSessions.slice(MAX_SESSIONS - 1).map((s) => s.id)
+    await prismaClient.refreshToken.deleteMany({ where: { id: { in: toRemove } } })
+  }
+}
+
+async function createSessionForUser(user: any, ipAddress: string | null, userAgent: string | null, res: Response, isGoogleAuth = false): Promise<AuthResponse> {
+  const accessToken = signAccessToken({ userId: user.id, role: user.role, orgUnitId: user.orgUnitId })
+
+  const refreshPlain = createSessionToken()
+  const tokenHash = hashToken(refreshPlain)
+  const expiresAt = new Date(Date.now() + REFRESH_EXPIRES * 1000)
+  const familyId = randomUUID()
+
+  await prismaClient.refreshToken.create({
+    data: { userId: user.id, tokenHash, expiresAt, ipAddress, userAgent, familyId, idleExpiresAt: idleDeadline() }
+  })
+
+  const opts = isGoogleAuth ? cookieOptionsGoogleCallback() : cookieOptions()
+  res.cookie('refresh_token', refreshPlain, opts)
+
+  return {
+    accessToken,
+    user: toUserPublic(user)
+  }
+}
+
+export const loginService = async (request: LoginRequest, ipAddress: string | null, userAgent: string | null, res: Response): Promise<AuthResponse> => {
+  const req = Validation.validate(AuthValidation.LOGIN, request)
+
+  const user = await prismaClient.user.findUnique({
+    where: { email: req.email },
+    include: { orgUnit: true }
+  })
+  if (!user) {
+    auditAuth({ action: 'LOGIN_FAILED', email: req.email, ip: ipAddress, userAgent, detail: 'unknown_email' })
+    throw new ResponseError(401, 'Invalid email or password', 'INVALID_CREDENTIALS')
+  }
+  if (user.isLocked) {
+    auditAuth({ action: 'LOGIN_FAILED', email: user.email, userId: user.id, ip: ipAddress, userAgent, detail: 'account_locked' })
+    throw new ResponseError(403, 'Account is locked', 'ACCOUNT_LOCKED')
+  }
+  if (!user.password) {
+    auditAuth({ action: 'LOGIN_FAILED', email: user.email, userId: user.id, ip: ipAddress, userAgent, detail: 'google_only' })
+    throw new ResponseError(401, 'This account uses Google login only', 'GOOGLE_ONLY')
+  }
+
+  const match = bcrypt.compareSync(req.password, user.password)
+  if (!match) {
+    const newFailed = user.failedLogins + 1
+    await prismaClient.user.update({
+      where: { id: user.id },
+      data: { failedLogins: newFailed, isLocked: newFailed >= 5 }
+    })
+    auditAuth({ action: 'LOGIN_FAILED', email: user.email, userId: user.id, ip: ipAddress, userAgent, detail: `wrong_password (attempt ${newFailed})` })
+    throw new ResponseError(401, 'Invalid email or password', 'INVALID_CREDENTIALS')
+  }
+
+  if (user.failedLogins > 0) {
+    await prismaClient.user.update({ where: { id: user.id }, data: { failedLogins: 0 } })
+  }
+
+  await pruneAndEnforce(user.id)
+  const result = await createSessionForUser(user, ipAddress, userAgent, res)
+  auditAuth({ action: 'LOGIN_SUCCESS', email: user.email, userId: user.id, ip: ipAddress, userAgent })
+  return result
+}
+
+export const loginGoogleService = async (googleUser: any, ipAddress: string | null, userAgent: string | null, res: Response): Promise<AuthResponse> => {
+  const user = await prismaClient.user.findUnique({
+    where: { email: googleUser.email },
+    include: { orgUnit: true }
+  })
+  if (!user) {
+    auditAuth({ action: 'LOGIN_FAILED', email: googleUser?.email, ip: ipAddress, userAgent, detail: 'google_unregistered' })
+    throw new ResponseError(401, 'User not found', 'UNAUTHORIZED')
+  }
+
+  await pruneAndEnforce(user.id)
+  const result = await createSessionForUser(user, ipAddress, userAgent, res, true)
+  auditAuth({ action: 'LOGIN_GOOGLE', email: user.email, userId: user.id, ip: ipAddress, userAgent })
+  return result
+}
+
+export const refreshService = async (rt: string | undefined, ipAddress: string | null, res: Response): Promise<AuthResponse> => {
+  if (!rt) {
+    clearAuthCookies(res)
+    throw new ResponseError(401, 'No refresh token', 'UNAUTHORIZED')
+  }
+
+  const tokenHash = hashToken(rt)
+  const stored = await prismaClient.refreshToken.findUnique({ where: { tokenHash } })
+
+  if (!stored) {
+    clearAuthCookies(res)
+    throw new ResponseError(401, 'Invalid refresh token', 'UNAUTHORIZED')
+  }
+
+  if (stored.expiresAt < new Date()) {
+    await prismaClient.refreshToken.delete({ where: { id: stored.id } })
+    clearAuthCookies(res)
+    throw new ResponseError(401, 'Refresh token expired', 'UNAUTHORIZED')
+  }
+
+  if (stored.revoked) {
+    logger.warn({ action: 'TOKEN_REUSE_DETECTED', userId: stored.userId, ipAddress })
+    await prismaClient.refreshToken.deleteMany({ where: { userId: stored.userId } })
+    clearAuthCookies(res)
+    throw new ResponseError(401, 'Token reuse detected — all sessions revoked', 'UNAUTHORIZED')
+  }
+
+  // Idle gate — sesi mati bila user tak aktif > IDLE_TIMEOUT.
+  // Refresh hanya MENG-ENFORCE batas idle, tidak menggesernya (lihat copy idleExpiresAt di bawah).
+  if (stored.idleExpiresAt < new Date()) {
+    if (stored.familyId) {
+      await prismaClient.refreshToken.deleteMany({ where: { familyId: stored.familyId } })
+    } else {
+      await prismaClient.refreshToken.delete({ where: { id: stored.id } })
+    }
+    clearAuthCookies(res)
+    throw new ResponseError(401, 'Session expired due to inactivity', 'SESSION_IDLE')
+  }
+
+  const user = await prismaClient.user.findUnique({
+    where: { id: stored.userId },
+    include: { orgUnit: true }
+  })
+  if (!user) throw new ResponseError(401, 'User not found', 'UNAUTHORIZED')
+
+  const newPlain = createSessionToken()
+  const newHash = hashToken(newPlain)
+  const newExpires = new Date(Date.now() + REFRESH_EXPIRES * 1000)
+  const inheritedFamilyId = stored.familyId || randomUUID()
+
+  await prismaClient.$transaction(async (tx) => {
+    const newToken = await tx.refreshToken.create({
+      data: { userId: stored.userId, tokenHash: newHash, expiresAt: newExpires, ipAddress: ipAddress ?? stored.ipAddress, userAgent: stored.userAgent, lastUsedAt: new Date(), familyId: inheritedFamilyId, idleExpiresAt: stored.idleExpiresAt }
+    })
+    await tx.refreshToken.update({
+      where: { id: stored.id },
+      data: { revoked: true, replacedBy: newToken.id }
+    })
+  })
+
+  await prismaClient.refreshToken.deleteMany({
+    where: { userId: stored.userId, OR: [{ revoked: true, id: { not: stored.id } }, { expiresAt: { lt: new Date() } }] }
+  })
+
+  const accessToken = signAccessToken({ userId: user.id, role: user.role, orgUnitId: user.orgUnitId })
+
+  res.clearCookie('refresh_token', { path: '/' })
+  if (COOKIE_DOMAIN) res.clearCookie('refresh_token', { path: '/', domain: COOKIE_DOMAIN })
+  res.cookie('refresh_token', newPlain, cookieOptions())
+
+  return { accessToken, user: toUserPublic(user) }
+}
+
+export const logoutService = async (
+  rt: string | undefined,
+  res: Response,
+  ipAddress: string | null = null,
+  userAgent: string | null = null
+): Promise<{ ok: boolean }> => {
+  if (rt) {
+    const tokenHash = hashToken(rt)
+    const stored = await prismaClient.refreshToken.findUnique({ where: { tokenHash } })
+    if (stored) {
+      const u = await prismaClient.user.findUnique({
+        where: { id: stored.userId },
+        select: { email: true }
+      })
+      auditAuth({ action: 'LOGOUT', email: u?.email, userId: stored.userId, ip: ipAddress, userAgent })
+      if (stored.familyId) {
+        await prismaClient.refreshToken.deleteMany({ where: { familyId: stored.familyId } })
+      } else {
+        await prismaClient.refreshToken.delete({ where: { id: stored.id } })
+      }
+    }
+  }
+  clearAuthCookies(res)
+  return { ok: true }
+}
+
+/**
+ * Heartbeat aktivitas user — geser `idleExpiresAt` maju.
+ * Dipanggil FE hanya saat ada aktivitas user nyata (throttled).
+ * TIDAK merotasi token (beda dengan /auth/refresh) → tanpa transaksi, murah.
+ */
+export const recordActivityService = async (
+  rt: string | undefined,
+  res: Response
+): Promise<{ ok: boolean; idleExpiresAt: string }> => {
+  if (!rt) {
+    clearAuthCookies(res)
+    throw new ResponseError(401, 'No refresh token', 'UNAUTHORIZED')
+  }
+
+  const tokenHash = hashToken(rt)
+  const stored = await prismaClient.refreshToken.findUnique({ where: { tokenHash } })
+
+  if (!stored) {
+    clearAuthCookies(res)
+    throw new ResponseError(401, 'Invalid refresh token', 'UNAUTHORIZED')
+  }
+
+  if (stored.expiresAt < new Date()) {
+    await prismaClient.refreshToken.delete({ where: { id: stored.id } })
+    clearAuthCookies(res)
+    throw new ResponseError(401, 'Refresh token expired', 'UNAUTHORIZED')
+  }
+
+  if (stored.revoked) {
+    logger.warn({ action: 'TOKEN_REUSE_DETECTED', userId: stored.userId })
+    await prismaClient.refreshToken.deleteMany({ where: { userId: stored.userId } })
+    clearAuthCookies(res)
+    throw new ResponseError(401, 'Token reuse detected — all sessions revoked', 'UNAUTHORIZED')
+  }
+
+  if (stored.idleExpiresAt < new Date()) {
+    if (stored.familyId) {
+      await prismaClient.refreshToken.deleteMany({ where: { familyId: stored.familyId } })
+    } else {
+      await prismaClient.refreshToken.delete({ where: { id: stored.id } })
+    }
+    clearAuthCookies(res)
+    throw new ResponseError(401, 'Session expired due to inactivity', 'SESSION_IDLE')
+  }
+
+  const newIdle = idleDeadline()
+  await prismaClient.refreshToken.update({
+    where: { id: stored.id },
+    data: { idleExpiresAt: newIdle, lastUsedAt: new Date() }
+  })
+
+  return { ok: true, idleExpiresAt: newIdle.toISOString() }
+}
+
+export const getActiveSessionsService = async (userId: string) => {
+  return prismaClient.refreshToken.findMany({
+    where: { userId, revoked: false, expiresAt: { gt: new Date() } },
+    select: { id: true, ipAddress: true, userAgent: true, createdAt: true, lastUsedAt: true },
+    orderBy: { lastUsedAt: 'desc' }
+  })
+}
+
+export const revokeSessionService = async (userId: string, sessionId: string) => {
+  const session = await prismaClient.refreshToken.findFirst({
+    where: { id: sessionId, userId, revoked: false }
+  })
+  if (!session) throw new ResponseError(404, 'Session tidak ditemukan', 'NOT_FOUND')
+
+  if (session.familyId) {
+    await prismaClient.refreshToken.deleteMany({ where: { familyId: session.familyId } })
+  } else {
+    await prismaClient.refreshToken.delete({ where: { id: sessionId } })
+  }
+  return { ok: true }
+}
+
+export const forceLogoutAllService = async (userId: string) => {
+  await prismaClient.refreshToken.deleteMany({ where: { userId } })
+  return { ok: true }
+}
