@@ -1,4 +1,4 @@
-import rateLimit from 'express-rate-limit'
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit'
 
 /**
  * Limiter global — lindungi seluruh API dari flooding/abuse.
@@ -15,12 +15,20 @@ export const globalLimiter = rateLimit({
 /**
  * Limiter ketat khusus login — proteksi brute-force kredensial.
  * Hanya dipasang di POST /api/auth/login (bukan /refresh, agar rotasi token normal tidak kena).
+ *
+ * Key berbasis EMAIL (per-akun), bukan IP. Tanpa ini, beberapa user di balik IP yang sama
+ * (NAT kampus, kantor, satu mesin) berbagi kuota — percobaan login user A bisa memblokir user B.
+ * Fallback ke IP bila body.email tidak ada (request rusak / bukan JSON).
  */
 export const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 menit
-  limit: 10, // 10 percobaan login / 15 menit / IP
+  limit: 10, // 10 percobaan login / 15 menit / akun
   standardHeaders: 'draft-7',
   legacyHeaders: false,
   skipSuccessfulRequests: true, // login sukses tidak menghabiskan kuota
+  keyGenerator: (req) => {
+    const email = typeof req.body?.email === 'string' ? req.body.email.toLowerCase().trim() : ''
+    return email ? `login:${email}` : `login-ip:${ipKeyGenerator(req.ip ?? '')}`
+  },
   message: { message: 'Terlalu banyak percobaan login. Coba lagi dalam 15 menit.', code: 'LOGIN_RATE_LIMITED' }
 })

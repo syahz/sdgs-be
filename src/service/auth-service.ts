@@ -14,6 +14,10 @@ import { auditAuth } from '../utils/audit-logger'
 
 const REFRESH_EXPIRES = Number(REFRESH_TOKEN_EXPIRES_SECONDS ?? 60 * 60 * 24 * 30)
 const MAX_SESSIONS = 5
+/** Brute-force: gagal login berturut sebanyak ini → akun dikunci. */
+const LOCK_THRESHOLD = 5
+/** Durasi kunci otomatis (menit). Setelah lewat, login berikut auto-unlock. */
+const LOCK_DURATION_MINUTES = 15
 /** Idle window — sesi mati bila tak ada aktivitas user selama durasi ini (default 30 menit). */
 const IDLE_TIMEOUT = Number(IDLE_TIMEOUT_SECONDS ?? 1800)
 
@@ -102,8 +106,29 @@ export const loginService = async (request: LoginRequest, ipAddress: string | nu
     throw new ResponseError(401, 'Invalid email or password', 'INVALID_CREDENTIALS')
   }
   if (user.isLocked) {
-    auditAuth({ action: 'LOGIN_FAILED', email: user.email, userId: user.id, ip: ipAddress, userAgent, detail: 'account_locked' })
-    throw new ResponseError(403, 'Account is locked', 'ACCOUNT_LOCKED')
+    // Auto-unlock bila lockedUntil sudah lewat. lockedUntil null = lock manual, hanya super admin yang bisa buka.
+    if (user.lockedUntil && user.lockedUntil <= new Date()) {
+      await prismaClient.user.update({
+        where: { id: user.id },
+        data: { isLocked: false, failedLogins: 0, lockedUntil: null }
+      })
+      auditAuth({ action: 'LOGIN_FAILED', email: user.email, userId: user.id, ip: ipAddress, userAgent, detail: 'auto_unlocked' })
+      user.isLocked = false
+      user.failedLogins = 0
+      user.lockedUntil = null
+    } else {
+      const detail = user.lockedUntil
+        ? `account_locked (until ${user.lockedUntil.toISOString()})`
+        : 'account_locked (manual)'
+      auditAuth({ action: 'LOGIN_FAILED', email: user.email, userId: user.id, ip: ipAddress, userAgent, detail })
+      const minsLeft = user.lockedUntil
+        ? Math.max(1, Math.ceil((user.lockedUntil.getTime() - Date.now()) / 60000))
+        : null
+      const msg = minsLeft
+        ? `Akun terkunci. Coba lagi dalam ${minsLeft} menit atau hubungi Super Admin.`
+        : 'Akun terkunci. Hubungi Super Admin untuk membuka.'
+      throw new ResponseError(403, msg, 'ACCOUNT_LOCKED')
+    }
   }
   if (!user.password) {
     auditAuth({ action: 'LOGIN_FAILED', email: user.email, userId: user.id, ip: ipAddress, userAgent, detail: 'google_only' })
@@ -113,11 +138,16 @@ export const loginService = async (request: LoginRequest, ipAddress: string | nu
   const match = bcrypt.compareSync(req.password, user.password)
   if (!match) {
     const newFailed = user.failedLogins + 1
+    const willLock = newFailed >= LOCK_THRESHOLD
     await prismaClient.user.update({
       where: { id: user.id },
-      data: { failedLogins: newFailed, isLocked: newFailed >= 5 }
+      data: {
+        failedLogins: newFailed,
+        isLocked: willLock,
+        lockedUntil: willLock ? new Date(Date.now() + LOCK_DURATION_MINUTES * 60000) : null
+      }
     })
-    auditAuth({ action: 'LOGIN_FAILED', email: user.email, userId: user.id, ip: ipAddress, userAgent, detail: `wrong_password (attempt ${newFailed})` })
+    auditAuth({ action: 'LOGIN_FAILED', email: user.email, userId: user.id, ip: ipAddress, userAgent, detail: `wrong_password (attempt ${newFailed}${willLock ? ', locked' : ''})` })
     throw new ResponseError(401, 'Invalid email or password', 'INVALID_CREDENTIALS')
   }
 

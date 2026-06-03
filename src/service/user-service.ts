@@ -75,6 +75,7 @@ export const updateUserService = async (
     delete req.orgUnitId
     delete req.status
     delete req.avatarInitials
+    delete req.isLocked
   }
 
   const user = await prismaClient.user.findUnique({ where: { id } })
@@ -101,6 +102,11 @@ export const updateUserService = async (
   }
   if (req.name && !req.avatarInitials) {
     data.avatarInitials = generateAvatarInitials(req.name)
+  }
+  // Unlock manual super admin: buka kunci sekaligus reset counter brute-force.
+  if (req.isLocked === false) {
+    data.failedLogins = 0
+    data.lockedUntil = null
   }
 
   const updated = await prismaClient.user.update({ where: { id }, data })
