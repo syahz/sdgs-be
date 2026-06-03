@@ -18,6 +18,7 @@ export interface UpdateUserRequest {
   orgUnitId?: string | null
   avatarInitials?: string
   status?: 'active' | 'inactive'
+  isLocked?: boolean // super admin only — set false untuk buka kunci akun
 }
 
 export type UserResponse = {
@@ -28,6 +29,8 @@ export type UserResponse = {
   orgUnitId: string | null
   avatarInitials: string
   status: string
+  isLocked: boolean
+  lockedUntil: string | null
 }
 
 export type UserWithOrgUnit = User & { orgUnit: OrgUnit | null }
@@ -40,7 +43,9 @@ export function toUserResponse(user: User): UserResponse {
     role: user.role,
     orgUnitId: user.orgUnitId,
     avatarInitials: user.avatarInitials,
-    status: user.status
+    status: user.status,
+    isLocked: user.isLocked,
+    lockedUntil: user.lockedUntil ? user.lockedUntil.toISOString() : null
   }
 }
 

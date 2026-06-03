@@ -107,8 +107,9 @@ model User {
   orgUnit   OrgUnit? @relation(fields: [orgUnitId], references: [id])
 
   // proteksi brute-force (pola BE/)
-  failedLogins Int     @default(0)
-  isLocked     Boolean @default(false)
+  failedLogins Int       @default(0)
+  isLocked     Boolean   @default(false)
+  lockedUntil  DateTime? // auto-unlock setelah waktu ini; null = lock manual (dibuka super admin)
 
   submissions       Submission[]       @relation("SubmittedBy")
   reviewComments    ReviewComment[]
