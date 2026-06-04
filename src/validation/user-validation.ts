@@ -21,6 +21,7 @@ export class UserValidation {
     role: roleEnum.optional(),
     orgUnitId: z.string().uuid().nullable().optional(),
     avatarInitials: z.string().max(4).optional(),
-    status: statusEnum.optional()
+    status: statusEnum.optional(),
+    isLocked: z.boolean().optional() // super admin only — strip untuk non-admin di service
   })
 }
