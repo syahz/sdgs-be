@@ -6,15 +6,13 @@ export class SubmissionValidation {
     sdgId: z.number().int().min(1).max(17),
     year: z.number().int().min(2020).max(2100),
     theAnswers: z.record(z.unknown()).optional().default({}),
-    qsAnswers: z.record(z.unknown()).optional().default({}),
-    fileNames: z.record(z.unknown()).optional().default({})
+    qsAnswers: z.record(z.unknown()).optional().default({})
   })
 
   static readonly UPDATE = z.object({
     title: z.string().min(1).max(500).optional(),
     theAnswers: z.record(z.unknown()).optional(),
-    qsAnswers: z.record(z.unknown()).optional(),
-    fileNames: z.record(z.unknown()).optional()
+    qsAnswers: z.record(z.unknown()).optional()
   })
 
   static readonly REVIEW = z.object({

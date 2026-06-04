@@ -14,6 +14,23 @@ export interface QuantMetric {
   unit: string;
 }
 
+/**
+ * Existence-point (p1) scoring for a QUALITATIVE indicator.
+ *  - binary  : p1 = answered==="ya" ? 1 : 0 (default when omitted)
+ *  - select  : answered must be "ya", then p1 = chosen option's value (radio)
+ *  - multi   : answered must be "ya", then p1 = min(cap, sum of chosen option values) (checkbox)
+ * Option `value` carries the THE points for that tier/component; `id` is what the answer stores.
+ */
+export interface ExistenceOption {
+  id: string;
+  value: number;
+  label: string;
+}
+export type ExistenceScoring =
+  | { mode: "binary" }
+  | { mode: "select"; options: ExistenceOption[] }
+  | { mode: "multi"; cap: number; options: ExistenceOption[] };
+
 export interface SdgIndicator {
   code: string;
   label: string;
@@ -22,6 +39,8 @@ export interface SdgIndicator {
   maxScore?: number;
   subQuestions?: SubQuestion[];
   metrics?: QuantMetric[];
+  /** Graduated existence (p1) scoring per THE methodology. Omit = binary. */
+  existenceScoring?: ExistenceScoring;
 }
 
 export interface SdgConfig {
@@ -512,6 +531,139 @@ export const THE_SDG_CONFIG_2026: Record<number, SdgConfig> = {
   ]},
 };
 
+/**
+ * Graduated existence-point (p1) scoring per THE 2026 methodology, keyed by indicator code.
+ * Indicators NOT listed here score existence as binary (answered "ya" → 1, else 0).
+ * Attached onto THE_SDG_CONFIG_2026 indicators by the loop below.
+ *  - select : user picks ONE tier; p1 = that option's value
+ *  - multi  : user checks components; p1 = min(cap, sum of chosen values)
+ * 13.4.1 (scope) & 13.4.2 (year) keep their own special-case logic in sdg-scoring.ts.
+ */
+const EXISTENCE_SCORING: Record<string, ExistenceScoring> = {
+  // ── free vs paid / subsidised / indirect ──
+  "1.3.3": { mode: "select", options: [{ id: "free", value: 1, label: "Gratis" }, { id: "subsidised", value: 0.25, label: "Bersubsidi" }] },
+  "1.4.1": { mode: "select", options: [{ id: "free", value: 1, label: "Gratis" }, { id: "subsidised", value: 0.25, label: "Bersubsidi" }] },
+  "1.4.3": { mode: "select", options: [{ id: "direct", value: 1, label: "Disediakan langsung" }, { id: "indirect", value: 0.25, label: "Tidak langsung" }] },
+  "2.5.1": { mode: "select", options: [{ id: "free", value: 1, label: "Gratis" }, { id: "paid", value: 0.25, label: "Berbayar" }] },
+  "2.5.2": { mode: "select", options: [{ id: "free", value: 1, label: "Gratis" }, { id: "paid", value: 0.25, label: "Berbayar" }] },
+  "2.5.3": { mode: "select", options: [{ id: "free", value: 1, label: "Gratis" }, { id: "paid", value: 0.25, label: "Berbayar" }] },
+  "3.3.4": { mode: "select", options: [{ id: "free", value: 1, label: "Akses gratis" }, { id: "charged", value: 0.25, label: "Berbayar" }] },
+  "5.6.4": { mode: "select", options: [{ id: "free", value: 1, label: "Akses gratis" }, { id: "paid", value: 0.25, label: "Berbayar" }] },
+  "5.6.5": { mode: "select", options: [{ id: "free", value: 1, label: "Akses gratis" }, { id: "paid", value: 0.25, label: "Berbayar" }] },
+  "14.2.1": { mode: "select", options: [{ id: "free", value: 1, label: "Gratis" }, { id: "paid", value: 0.25, label: "Berbayar saja" }] },
+  "14.2.2": { mode: "select", options: [{ id: "free", value: 1, label: "Gratis" }, { id: "paid", value: 0.25, label: "Berbayar saja" }] },
+  "14.2.3": { mode: "select", options: [{ id: "free", value: 1, label: "Gratis" }, { id: "paid", value: 0.25, label: "Berbayar saja" }] },
+  "15.2.4": { mode: "select", options: [{ id: "free", value: 1, label: "Akses gratis" }, { id: "charged", value: 0.25, label: "Berbayar" }] },
+  "15.2.5": { mode: "select", options: [{ id: "free", value: 1, label: "Akses gratis" }, { id: "charged", value: 0.25, label: "Berbayar" }] },
+  "15.2.6": { mode: "select", options: [{ id: "free", value: 1, label: "Akses gratis" }, { id: "charged", value: 0.25, label: "Berbayar" }] },
+
+  // ── whole vs partial measurement ──
+  "2.2.1": { mode: "select", options: [{ id: "whole", value: 1, label: "Seluruh universitas" }, { id: "partial", value: 0.5, label: "Sebagian" }] },
+  "6.2.1": { mode: "select", options: [{ id: "whole", value: 1, label: "Seluruh universitas" }, { id: "partial", value: 0.5, label: "Sebagian" }] },
+  "12.3.1": { mode: "select", options: [{ id: "whole", value: 1, label: "Seluruh universitas" }, { id: "partial", value: 0.5, label: "Sebagian" }] },
+  "13.2.1": { mode: "select", options: [{ id: "whole", value: 1, label: "Seluruh universitas" }, { id: "partial", value: 0.5, label: "Sebagian" }] },
+
+  // ── all outlets vs selected ──
+  "2.3.3": { mode: "select", options: [{ id: "all", value: 1, label: "Semua gerai makanan" }, { id: "selected", value: 0.5, label: "Sebagian gerai" }] },
+  "2.3.4": { mode: "select", options: [{ id: "all", value: 1, label: "Semua gerai makanan" }, { id: "selected", value: 0.5, label: "Sebagian gerai" }] },
+
+  // ── ad-hoc / programmed (multi: dua komponen independen; keduanya dicentang = 1.0) ──
+  "4.3.3": { mode: "multi", cap: 1, options: [{ id: "programmed", value: 0.75, label: "Terprogram" }, { id: "adhoc", value: 0.25, label: "Ad-hoc" }] },
+  "4.3.4": { mode: "multi", cap: 1, options: [{ id: "programmed", value: 0.75, label: "Terprogram" }, { id: "adhoc", value: 0.25, label: "Ad-hoc" }] },
+  "14.5.3": { mode: "select", options: [{ id: "ongoing", value: 1, label: "Berkelanjutan (ongoing)" }, { id: "adhoc", value: 0.25, label: "Ad-hoc saja" }] },
+
+  // ── public events tiers ──
+  "4.3.2": { mode: "select", options: [{ id: "allFree", value: 1, label: "Semua acara gratis" }, { id: "both", value: 0.5, label: "Gratis & berbayar" }, { id: "charged", value: 0.25, label: "Berbayar saja" }] },
+
+  // ── free both / free only / paid only (dua opsi bernilai 1) ──
+  "6.5.1": { mode: "select", options: [{ id: "both", value: 1, label: "Gratis & berbayar" }, { id: "freeOnly", value: 1, label: "Gratis saja" }, { id: "paidOnly", value: 0.25, label: "Berbayar saja" }] },
+  "7.4.3": { mode: "select", options: [{ id: "both", value: 1, label: "Gratis & berbayar" }, { id: "freeOnly", value: 1, label: "Gratis saja" }, { id: "paidOnly", value: 0.25, label: "Berbayar saja" }] },
+
+  // ── collaboration count 3/2/1 ──
+  "3.3.1": { mode: "select", options: [{ id: "three", value: 1, label: "Ketiga (lokal+nasional+global)" }, { id: "two", value: 0.66, label: "Dua kolaborasi" }, { id: "one", value: 0.33, label: "Satu kolaborasi" }] },
+
+  // ── shared sports access tiers ──
+  "3.3.3": { mode: "select", options: [{ id: "freeAll", value: 1, label: "Gratis semua fasilitas" }, { id: "freeSome", value: 0.66, label: "Gratis sebagian fasilitas" }, { id: "charged", value: 0.33, label: "Berbayar saja" }] },
+
+  // ── mental health support tiers ──
+  "3.3.5": { mode: "select", options: [{ id: "active", value: 1, label: "Promosi aktif kesehatan mental" }, { id: "free", value: 0.66, label: "Akses/rujukan gratis" }, { id: "charged", value: 0.33, label: "Akses/rujukan berbayar" }] },
+  "3.3.7": { mode: "select", options: [{ id: "active", value: 1, label: "Promosi aktif kesehatan mental" }, { id: "free", value: 0.66, label: "Akses/rujukan gratis" }, { id: "charged", value: 0.33, label: "Akses/rujukan berbayar" }] },
+
+  // ── smoke-free (4pt) ──
+  "3.3.6": { mode: "select", options: [{ id: "full", value: 1, label: "Kampus bebas rokok penuh" }, { id: "partial", value: 0.5, label: "Bebas rokok sebagian" }] },
+
+  // ── public access buildings / museums / green spaces ──
+  "11.2.1": { mode: "select", options: [{ id: "freeAll", value: 1, label: "Gratis semua bangunan signifikan" }, { id: "freeSome", value: 0.5, label: "Sebagian akses gratis" }, { id: "paid", value: 0.25, label: "Berbayar saja" }] },
+  "11.2.3": { mode: "select", options: [{ id: "freeAll", value: 1, label: "Gratis semua museum/galeri" }, { id: "freeSome", value: 0.5, label: "Gratis sebagian" }, { id: "paid", value: 0.25, label: "Berbayar saja" }] },
+  "11.2.4": { mode: "select", options: [{ id: "permanent", value: 1, label: "Akses gratis permanen" }, { id: "occasional", value: 0.5, label: "Gratis sesekali" }, { id: "paid", value: 0.25, label: "Berbayar saja" }] },
+
+  // ── libraries ──
+  "11.2.2": { mode: "select", options: [{ id: "auto", value: 1, label: "Akses gratis otomatis untuk publik" }, { id: "application", value: 0.75, label: "Akses semua via permohonan" }, { id: "some", value: 0.25, label: "Hanya keadaan tertentu" }] },
+
+  // ── arts performances count ──
+  "11.2.5": { mode: "select", options: [{ id: "gt30", value: 1, label: ">30 pertunjukan" }, { id: "gt15", value: 0.75, label: ">15 pertunjukan" }, { id: "adhoc", value: 0.25, label: "Ad-hoc saja" }] },
+
+  // ── sustainability report frequency ──
+  "12.4.1": { mode: "select", options: [{ id: "annual", value: 1, label: "Tahunan" }, { id: "biannual", value: 0.6, label: "Dua tahunan" }, { id: "less", value: 0.3, label: "Lebih jarang" }] },
+
+  // ── education commitment ──
+  "17.4.1": { mode: "select", options: [{ id: "integrated", value: 1, label: "Terintegrasi seluruh kurikulum" }, { id: "mandatory", value: 0.66, label: "Wajib untuk semua" }, { id: "optional", value: 0.25, label: "Opsional untuk semua" }] },
+
+  // ══ MULTI (komponen dijumlah, dibatasi cap) ══
+  // per-level local/regional/national/global ×0.25
+  "1.4.4": { mode: "multi", cap: 1, options: [{ id: "local", value: 0.25, label: "Lokal" }, { id: "regional", value: 0.25, label: "Regional" }, { id: "national", value: 0.25, label: "Nasional" }, { id: "global", value: 0.25, label: "Global" }] },
+  "6.5.5": { mode: "multi", cap: 1, options: [{ id: "local", value: 0.25, label: "Lokal" }, { id: "regional", value: 0.25, label: "Regional" }, { id: "national", value: 0.25, label: "Nasional" }, { id: "global", value: 0.25, label: "Global" }] },
+  "7.4.4": { mode: "multi", cap: 1, options: [{ id: "local", value: 0.25, label: "Lokal" }, { id: "regional", value: 0.25, label: "Regional" }, { id: "national", value: 0.25, label: "Nasional" }, { id: "global", value: 0.25, label: "Global" }] },
+
+  // health outreach components
+  "3.3.2": { mode: "multi", cap: 1, options: [{ id: "local", value: 0.5, label: "Komunitas lokal" }, { id: "disadvantaged", value: 0.25, label: "Kelompok kurang mampu" }, { id: "refugee", value: 0.25, label: "Komunitas pengungsi/imigran" }] },
+
+  // public resources components
+  "4.3.1": { mode: "multi", cap: 1, options: [{ id: "courses", value: 0.4, label: "Kursus gratis bersertifikat" }, { id: "facilities", value: 0.4, label: "Akses gratis fasilitas/peralatan" }, { id: "online", value: 0.2, label: "Akses gratis sumber daya online" }] },
+
+  // women access schemes
+  "5.3.3": { mode: "multi", cap: 1, options: [{ id: "mentoring", value: 0.4, label: "Mentoring" }, { id: "scholarships", value: 0.4, label: "Beasiswa" }, { id: "other", value: 0.2, label: "Ketentuan lainnya" }] },
+
+  // women in underrepresented subjects
+  "5.3.4": { mode: "multi", cap: 1, options: [{ id: "outreach", value: 0.5, label: "Outreach universitas" }, { id: "collaboration", value: 0.5, label: "Kolaborasi" }] },
+
+  // cultural heritage projects
+  "11.2.6": { mode: "multi", cap: 1, options: [{ id: "localRegional", value: 0.33, label: "Warisan lokal/regional" }, { id: "national", value: 0.33, label: "Warisan nasional" }, { id: "displaced", value: 0.33, label: "Warisan komunitas terdampak" }] },
+
+  // affordable housing components
+  "11.4.4": { mode: "multi", cap: 1, options: [{ id: "evaluate", value: 0.33, label: "Evaluasi keterjangkauan" }, { id: "provide", value: 0.33, label: "Sediakan hunian langsung" }, { id: "financial", value: 0.33, label: "Dukungan finansial" }] },
+  "11.4.5": { mode: "multi", cap: 1, options: [{ id: "evaluate", value: 0.33, label: "Evaluasi keterjangkauan" }, { id: "provide", value: 0.33, label: "Sediakan hunian langsung" }, { id: "financial", value: 0.33, label: "Dukungan finansial" }] },
+
+  // co-operative disaster planning
+  "13.3.3": { mode: "multi", cap: 1, options: [{ id: "local", value: 0.5, label: "Lokal" }, { id: "regional", value: 0.5, label: "Regional" }] },
+
+  // elected representation
+  "16.2.1": { mode: "multi", cap: 1, options: [{ id: "students", value: 0.33, label: "Mahasiswa" }, { id: "faculty", value: 0.33, label: "Dosen" }, { id: "staff", value: 0.33, label: "Staf non-dosen" }] },
+
+  // students union recognition
+  "16.2.2": { mode: "multi", cap: 1, options: [{ id: "governance", value: 0.33, label: "Input tata kelola" }, { id: "support", value: 0.33, label: "Dukungan mahasiswa" }, { id: "social", value: 0.33, label: "Kegiatan sosial" }] },
+
+  // academic freedom (4pt) — 4 area ×0.25
+  "16.2.6": { mode: "multi", cap: 1, options: [{ id: "researchSenior", value: 0.25, label: "Riset — akademisi senior" }, { id: "researchJunior", value: 0.25, label: "Riset — akademisi junior" }, { id: "teachSenior", value: 0.25, label: "Pengajaran — senior" }, { id: "teachJunior", value: 0.25, label: "Pengajaran — junior" }] },
+
+  // expert advice to government
+  "16.3.1": { mode: "multi", cap: 1, options: [{ id: "local", value: 0.33, label: "Lokal" }, { id: "regional", value: 0.33, label: "Regional" }, { id: "national", value: 0.33, label: "Nasional" }] },
+
+  // collaboration with NGOs for SDGs
+  "17.2.5": { mode: "multi", cap: 1, options: [{ id: "volunteering", value: 0.33, label: "Program relawan mahasiswa" }, { id: "research", value: 0.33, label: "Program riset" }, { id: "resources", value: 0.33, label: "Pengembangan sumber edukasi" }] },
+
+  // education outreach wider community
+  "17.4.3": { mode: "multi", cap: 1, options: [{ id: "alumni", value: 0.33, label: "Alumni" }, { id: "local", value: 0.33, label: "Komunitas lokal" }, { id: "displaced", value: 0.33, label: "Pengungsi/terdampak" }] },
+};
+
+// Attach graduated existence-scoring config onto matching indicators.
+for (const sdg of Object.values(THE_SDG_CONFIG_2026)) {
+  for (const ind of sdg.indicators) {
+    const es = EXISTENCE_SCORING[ind.code];
+    if (es) ind.existenceScoring = es;
+  }
+}
+
 export const MANDATORY_SDGS = [1, 3, 4, 8, 17];
 
 /** Answer shape for a QUALITATIVE indicator */
@@ -522,6 +674,10 @@ export interface QualAnswer {
   policyUpdated?: boolean;
   scopeCoverage?: "none" | "scope1_2" | "scope1_2_3_partial" | "scope1_2_3_full" | null;
   targetYear?: number | null;
+  /** existenceScoring "select" mode → chosen ExistenceOption id */
+  existenceChoice?: string | null;
+  /** existenceScoring "multi" mode → chosen ExistenceOption ids */
+  existenceChoices?: string[];
 }
 
 /** Answer shape for a QUANTITATIVE indicator */

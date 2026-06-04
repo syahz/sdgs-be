@@ -145,7 +145,6 @@ model Submission {
   // Jawaban indikator — JSON. Key "THE_1_2_1" / "QS_13_1".
   theAnswers Json @default("{}")
   qsAnswers  Json @default("{}")
-  fileNames  Json @default("{}")
 
   reviewComments ReviewComment[]
   logs           SubmissionLog[]
