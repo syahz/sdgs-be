@@ -262,9 +262,9 @@ model RefreshToken {
   revoked    Boolean @default(false)
   replacedBy String? // id token pengganti — deteksi reuse
 
-  createdAt  DateTime @default(now())
-  expiresAt  DateTime // batas absolut sesi (30 hari)
-  lastUsedAt DateTime @default(now())
+  createdAt     DateTime @default(now())
+  expiresAt     DateTime // batas absolut sesi (30 hari)
+  lastUsedAt    DateTime @default(now())
   // batas idle — sesi mati bila tak ada aktivitas user sampai waktu ini.
   // hanya digeser oleh POST /auth/activity, bukan rotasi /auth/refresh.
   idleExpiresAt DateTime
