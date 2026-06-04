@@ -93,7 +93,6 @@ export const createSubmissionService = async (request: CreateSubmissionRequest, 
       submittedByUserId: currentUser.id,
       theAnswers: cleanThe as Prisma.InputJsonValue,
       qsAnswers: cleanQs as Prisma.InputJsonValue,
-      fileNames: (sanitizeJson(req.fileNames ?? {})) as Prisma.InputJsonValue,
       points
     },
     include: submissionInclude
@@ -126,7 +125,6 @@ export const updateSubmissionService = async (id: string, request: UpdateSubmiss
       title: req.title,
       theAnswers: newTheAnswers as Prisma.InputJsonValue,
       qsAnswers: newQsAnswers as Prisma.InputJsonValue,
-      fileNames: req.fileNames !== undefined ? req.fileNames as Prisma.InputJsonValue : undefined,
       points
     },
     include: submissionInclude

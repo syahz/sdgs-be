@@ -75,6 +75,30 @@ const SCOPE_TIER_POINTS: Record<NonNullable<QualAnswer["scopeCoverage"]>, number
   scope1_2_3_full: 3,
 };
 
+/**
+ * Existence point (p1) per indicator config.
+ *  binary (or unset) → answered==="ya" ? 1 : 0
+ *  select → must answer "ya", then value of chosen option id
+ *  multi  → must answer "ya", then sum of chosen option values, capped.
+ *           ALL options selected → exactly `cap` (THE wording "maximum one
+ *           point for all"; component figures like 0.33 are rounded thirds,
+ *           so 0.33×3 must resolve to 1, not 0.99).
+ */
+function calcExistenceP1(ind: SdgIndicator, ans: QualAnswer): number {
+  const es = ind.existenceScoring;
+  if (!es || es.mode === "binary") return ans.answered === "ya" ? 1 : 0;
+  if (ans.answered !== "ya") return 0;
+  if (es.mode === "select") {
+    const opt = es.options.find((o) => o.id === ans.existenceChoice);
+    return opt ? opt.value : 0;
+  }
+  const chosen = new Set(ans.existenceChoices ?? []);
+  const picked = es.options.filter((o) => chosen.has(o.id));
+  if (picked.length === es.options.length) return es.cap;
+  const sum = picked.reduce((s, o) => s + o.value, 0);
+  return Math.min(es.cap, parseFloat(sum.toFixed(2)));
+}
+
 function calcCarbonTargetYearScore(year: number | null | undefined): number {
   if (!year || year <= 0) return 0;
   if (year <= 2023) return 4;
@@ -114,7 +138,7 @@ export function calcQualScore(ind: SdgIndicator, ans: QualAnswer | undefined): {
     return { score, max, pct: max > 0 ? Math.round((score / max) * 100) : 0, p1: 1, p2: p_evidence, p3: p_public, p4: p_scope, wc };
   }
 
-  const p1 = ans.answered === "ya" ? 1 : 0;
+  const p1 = calcExistenceP1(ind, ans);
   const wc = countWords(ans.comment ?? "");
   const p2 = p1 === 0 ? 0 : wc >= 50 ? 1 : wc > 0 ? 0.5 : 0;
   const links = (ans.publicLinks ?? []).filter((l) => (l ?? "").trim());

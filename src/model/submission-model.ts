@@ -6,14 +6,12 @@ export interface CreateSubmissionRequest {
   year: number
   theAnswers?: Record<string, unknown>
   qsAnswers?: Record<string, unknown>
-  fileNames?: Record<string, unknown>
 }
 
 export interface UpdateSubmissionRequest {
   title?: string
   theAnswers?: Record<string, unknown>
   qsAnswers?: Record<string, unknown>
-  fileNames?: Record<string, unknown>
 }
 
 export interface ReviewRequest {
@@ -45,7 +43,6 @@ export type SubmissionResponse = {
   submittedAt: Date | null
   theAnswers: unknown
   qsAnswers: unknown
-  fileNames: unknown
   createdAt: Date
   updatedAt: Date
   reviewComments?: unknown[]
@@ -73,7 +70,6 @@ export function toSubmissionResponse(s: SubmissionWithRelations): SubmissionResp
     submittedAt: s.submittedAt,
     theAnswers: s.theAnswers,
     qsAnswers: s.qsAnswers,
-    fileNames: s.fileNames,
     createdAt: s.createdAt,
     updatedAt: s.updatedAt,
     ...(s.reviewComments !== undefined ? { reviewComments: s.reviewComments } : {}),
