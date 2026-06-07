@@ -690,3 +690,79 @@ export interface BiblAnswer {
 
 /** Full answer map for one SDG submission */
 export type SdgAnswers = Record<string, QualAnswer | QuantAnswer | BiblAnswer>;
+
+// ─── Quantitative raw-value (ratio) recipes — THE PDF formula per indicator ───
+// Ratio ONLY (PDF-exact, per each indicator's definition paragraph). Statistical
+// normalisation 0–100 needs the cross-university cohort and is THE central's job,
+// so it is NOT computed here. Quantitative indicators therefore contribute 0 to the
+// SDG total; the ratio is for display + year-over-year self-comparison.
+//   A = proportion subset/total                 (higher = better)
+//   B = per-capita density numerator/denominator (lower  = better)
+//   C = 8.3 (expenditure/employees) / regional GDP per capita (GDP not collected here)
+//   D = energy/waste subset/total               (higher = better; some gated)
+//   E = subject-weighted (pooled per-subject ratio)
+//   F = absolute count (no division)
+// `gate` references a tracking indicator that must report WHOLE-university measurement
+// (answered "ya" AND existenceChoice "whole") or the ratio is gated to null. PDF-strict:
+// "only scored where measuring across the whole university" — partial/none does not score.
+// The whole/partial choice is already captured by the tracking indicator's existenceScoring.
+// Field keys reference metrics[].key of the SAME indicator unless the recipe says otherwise.
+export type QuantPattern = "A" | "B" | "C" | "D" | "E" | "F";
+export interface QuantSubjectPair { numerator: string; denominator: string; }
+export interface QuantFormula {
+  pattern: QuantPattern;
+  numerator?: string;
+  denominator?: string;
+  direction: "higher" | "lower";
+  gate?: string;
+  external?: "regionalGDP";
+  subjects?: QuantSubjectPair[];
+  countKey?: string;
+}
+
+export const QUANT_FORMULAS: Record<string, QuantFormula> = {
+  // Pola A — proporsi subset/total (tinggi = baik)
+  "1.2.1":  { pattern: "A", numerator: "lowIncomeStudentsWithAid",       denominator: "totalStudentsFTE",           direction: "higher" },
+  "2.4.1":  { pattern: "A", numerator: "agricultureSustainGraduates",    denominator: "totalGraduates",             direction: "higher" },
+  "3.2.1":  { pattern: "A", numerator: "healthProfGraduates",            denominator: "totalGraduates",             direction: "higher" },
+  "4.2.1":  { pattern: "A", numerator: "primaryTeachingGraduates",       denominator: "totalGraduates",             direction: "higher" },
+  "4.4.1":  { pattern: "A", numerator: "firstGenStudents",               denominator: "studentsStartingDegree",     direction: "higher" },
+  "5.2.1":  { pattern: "A", numerator: "firstGenFemaleStudents",         denominator: "femaleStudentsStarting",     direction: "higher" },
+  "5.4.1":  { pattern: "A", numerator: "femaleSeniorAcademicFTE",        denominator: "totalSeniorAcademicFTE",     direction: "higher" },
+  "8.4.1":  { pattern: "A", numerator: "studentsWithPlacementFTE",       denominator: "totalStudentsFTE",           direction: "higher" },
+  "8.5.1":  { pattern: "A", numerator: "secureContractEmployeesFTE",     denominator: "totalEmployeesFTE",          direction: "higher" },
+  "10.2.1": { pattern: "A", numerator: "firstGenStudents",               denominator: "studentsStartingDegree",     direction: "higher" },
+  "10.3.1": { pattern: "A", numerator: "intlStudentsDevelopingCountries", denominator: "totalStudentsFTE",          direction: "higher" },
+  "10.4.1": { pattern: "A", numerator: "studentsWithDisabilityFTE",      denominator: "totalStudentsFTE",           direction: "higher" },
+  "10.5.1": { pattern: "A", numerator: "employeesWithDisabilityFTE",     denominator: "totalEmployeesFTE",          direction: "higher" },
+  "11.3.1": { pattern: "A", numerator: "artsHeritageExpenditure",        denominator: "totalUniversityExpenditure", direction: "higher" },
+  "16.4.1": { pattern: "A", numerator: "lawEnforcementGraduates",        denominator: "totalGraduates",             direction: "higher" },
+
+  // Pola B — densitas per-kapita (rendah = baik); 2.2.2 & 6.2.2 ber-gate
+  "2.2.2":  { pattern: "B", numerator: "totalFoodWasteTon", denominator: "campusPopulationFTE", direction: "lower", gate: "2.2.1" },
+  "6.2.2":  { pattern: "B", numerator: "waterUsedM3",       denominator: "campusPopulationFTE", direction: "lower", gate: "6.2.1" },
+  "7.3.1":  { pattern: "B", numerator: "totalEnergyGJ",     denominator: "floorSpaceM2",        direction: "lower" },
+
+  // Pola C — 8.3 (pengeluaran/pegawai) / GDP regional per kapita (GDP tak dikumpulkan; rasio dasar saja)
+  "8.3.1":  { pattern: "C", numerator: "universityExpenditureLocal", denominator: "totalEmployeesFTE", direction: "higher", external: "regionalGDP" },
+
+  // Pola D — energi/limbah subset/total (tinggi = baik); 12.3.2 & 13.2.2 ber-gate
+  "7.5.1":  { pattern: "D", numerator: "lowCarbonEnergyGJ", denominator: "totalEnergyGJ", direction: "higher" },
+  "12.3.2": { pattern: "D", numerator: "recycledWasteTon",  denominator: "totalWasteTon", direction: "higher", gate: "12.3.1" },
+  "13.2.2": { pattern: "D", numerator: "lowCarbonEnergyGJ", denominator: "totalEnergyGJ", direction: "higher", gate: "13.2.1" },
+
+  // Pola E — subject-weighted (pooled rasio 3 subjek: STEM/Medis/Soshum)
+  "5.5.1":  { pattern: "E", direction: "higher", subjects: [
+    { numerator: "femaleGraduatesSTEM",     denominator: "graduatesSTEM" },
+    { numerator: "femaleGraduatesMedicine", denominator: "graduatesMedicine" },
+    { numerator: "femaleGraduatesArts",     denominator: "graduatesArts" },
+  ] },
+  "9.4.1":  { pattern: "E", direction: "higher", subjects: [
+    { numerator: "researchIncomeSTEM",     denominator: "academicStaffSTEM" },
+    { numerator: "researchIncomeMedicine", denominator: "academicStaffMedicine" },
+    { numerator: "researchIncomeArts",     denominator: "academicStaffArts" },
+  ] },
+
+  // Pola F — hitung absolut (tanpa pembagian)
+  "9.3.1":  { pattern: "F", countKey: "activeSpinOffs", direction: "higher" },
+};
