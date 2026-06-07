@@ -9,7 +9,13 @@
  *   contribution = (score / maxScore) * weightInSdg
  *
  * BIBLIOMETRIC  → validator fills a percentage score (0–100); contribution = (score/100) * weightInSdg
- * QUANTITATIVE  → all metric fields must be filled → full weightInSdg contribution; partial → 0
+ * QUANTITATIVE  → compute the PDF-exact raw RATIO only (see QUANT_FORMULAS, 6 patterns A–F).
+ *                 Normalisation 0–100 is THE central's job (needs the cross-university cohort),
+ *                 so it is NOT done here → quantitative contributes 0 to the SDG total. The ratio
+ *                 is surfaced for display + year-over-year self-comparison. A missing/blank field
+ *                 marks only THAT indicator not_assessed (PDF: "zero for that metric"), it does
+ *                 NOT zero the whole SDG. Gated metrics (2.2.2/6.2.2/12.3.2/13.2.2) need their
+ *                 tracking indicator answered "ya" or the ratio is null.
  *
  * Special-case scoring (override of standard formulas):
  *   13.4.1 (Carbon-neutral commitment) — max 5pt:
@@ -20,7 +26,7 @@
  *       <=2023 → 4, 2024-2029 → 3, 2030-2039 → 2, 2040-2049 → 1, >=2050 → 0.5, else 0
  */
 
-import { THE_SDG_CONFIG_2026, type SdgIndicator, type QualAnswer, type QuantAnswer, type BiblAnswer, type SdgAnswers } from "./the-sdg-config";
+import { THE_SDG_CONFIG_2026, QUANT_FORMULAS, type SdgIndicator, type QualAnswer, type QuantAnswer, type BiblAnswer, type SdgAnswers } from "./the-sdg-config";
 
 export type { QualAnswer, QuantAnswer, BiblAnswer, SdgAnswers };
 
@@ -42,8 +48,21 @@ export interface QualIndicatorScore {
 export interface QuantIndicatorScore {
   indicatorCode: string;
   type: "QUANTITATIVE";
+  /** All formula fields present & ratio computable. Kept for completeness/readiness checks. */
   filled: boolean;
+  /** PDF-exact raw ratio (A/B/D/E), per-employee value (C), or count (F). null if gated/missing/no recipe. */
+  rawValue: number | null;
+  /** rawValue as % — only for proportion patterns A/D/E (0–1 → 0–100). null for B/C/F or unavailable. */
+  ratioPct: number | null;
+  /** computed = ratio ready; gated = tracking indicator not "ya"; not_assessed = missing field / no recipe. */
+  state: "computed" | "gated" | "not_assessed";
+  /** higher = bigger ratio is better; lower = smaller is better (B per-capita metrics). */
+  direction: "higher" | "lower";
+  gated: boolean;
+  /** C only: regional-GDP normalisation not applied (data not collected) → base ratio only. */
+  partialExternal?: boolean;
   weightInSdg: number;
+  /** Always 0 — quantitative does not contribute to the SDG total (normalisation is THE's job). */
   contribution: number;
 }
 
@@ -108,6 +127,163 @@ function calcCarbonTargetYearScore(year: number | null | undefined): number {
   return 0.5;
 }
 
+// ─── QUANTITATIVE raw-value (ratio) computation — 6 patterns + gate ───
+export interface QuantRawResult {
+  /** ratio (A/B/D/E), per-employee value (C base), or count (F); null if gated/missing/no recipe. */
+  value: number | null;
+  state: "computed" | "gated" | "not_assessed";
+  direction: "higher" | "lower";
+  gated: boolean;
+  /** true when one or more required formula fields are missing/blank. */
+  missingFields: boolean;
+  /** C only: regional-GDP normalisation not applied (data unavailable). */
+  partialExternal?: boolean;
+}
+
+/** Read a numeric metric value (stored as string) from an indicator's answer. null if blank/invalid. */
+function numField(answers: SdgAnswers, code: string, key: string): number | null {
+  const a = answers[code] as QuantAnswer | undefined;
+  const raw = a?.[key];
+  if (raw === undefined || raw === null || String(raw).trim() === "") return null;
+  const n = parseFloat(String(raw).trim());
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Compute the PDF-exact raw ratio for a QUANTITATIVE indicator.
+ * Ratio only — NO 0–100 normalisation (that is THE central's job, needs the cohort).
+ */
+export function computeQuantRaw(ind: SdgIndicator, answers: SdgAnswers): QuantRawResult {
+  const f = QUANT_FORMULAS[ind.code];
+  const direction = f?.direction ?? "higher";
+
+  // No recipe (e.g. 4.3.6/4.3.7 year-capture helpers) → not scored as a ratio.
+  if (!f) return { value: null, state: "not_assessed", direction, gated: false, missingFields: true };
+
+  // Gate (PDF-strict): the linked tracking indicator must report WHOLE-university
+  // measurement — answered "ya" AND existenceChoice "whole". Partial/none → gated.
+  // (PDF: "only scored where measuring across the whole university".)
+  if (f.gate) {
+    const g = answers[f.gate] as QualAnswer | undefined;
+    if (!g || g.answered !== "ya" || g.existenceChoice !== "whole") {
+      return { value: null, state: "gated", direction, gated: true, missingFields: false };
+    }
+  }
+
+  // F — absolute count (no division).
+  if (f.pattern === "F") {
+    const v = numField(answers, ind.code, f.countKey ?? "");
+    if (v === null) return { value: null, state: "not_assessed", direction, gated: false, missingFields: true };
+    return { value: v, state: "computed", direction, gated: false, missingFields: false };
+  }
+
+  // E — subject-weighted: pooled sum(numerator)/sum(denominator) across subjects.
+  if (f.pattern === "E") {
+    let sumNum = 0, sumDen = 0, anyMissing = false;
+    for (const s of f.subjects ?? []) {
+      const n = numField(answers, ind.code, s.numerator);
+      const d = numField(answers, ind.code, s.denominator);
+      if (n === null || d === null) { anyMissing = true; continue; }
+      sumNum += n; sumDen += d;
+    }
+    if (sumDen <= 0) return { value: null, state: "not_assessed", direction, gated: false, missingFields: true };
+    return { value: sumNum / sumDen, state: "computed", direction, gated: false, missingFields: anyMissing };
+  }
+
+  // A, B, C, D — numerator / denominator.
+  const num = numField(answers, ind.code, f.numerator ?? "");
+  const den = numField(answers, ind.code, f.denominator ?? "");
+  if (num === null || den === null || den === 0) {
+    return { value: null, state: "not_assessed", direction, gated: false, missingFields: true };
+  }
+  // C (8.3): (expenditure/employees) / regional GDP per capita. GDP is not collected by this
+  // internal system, so only the base ratio (expenditure per employee) is produced.
+  const partialExternal = f.pattern === "C" ? true : undefined;
+  return { value: num / den, state: "computed", direction, gated: false, missingFields: false, partialExternal };
+}
+
+/** Build the display-facing quantitative score row (contributes 0 to the SDG total). */
+export function buildQuantScore(ind: SdgIndicator, answers: SdgAnswers): QuantIndicatorScore {
+  const raw = computeQuantRaw(ind, answers);
+  const f = QUANT_FORMULAS[ind.code];
+  const isProportion = !!f && (f.pattern === "A" || f.pattern === "D" || f.pattern === "E");
+  const ratioPct = isProportion && raw.value !== null ? parseFloat((raw.value * 100).toFixed(2)) : null;
+  return {
+    indicatorCode: ind.code,
+    type: "QUANTITATIVE",
+    filled: raw.state === "computed",
+    rawValue: raw.value,
+    ratioPct,
+    state: raw.state,
+    direction: raw.direction,
+    gated: raw.gated,
+    partialExternal: raw.partialExternal,
+    weightInSdg: ind.weightInSdg,
+    contribution: 0,
+  };
+}
+
+// ─── Year-over-year self-comparison for a QUANTITATIVE indicator ───
+// Compares the institution's OWN ratio this year vs a prior year. No normalisation
+// needed (self-comparison). Per-indicator: a blank prior → baseline. `direction`
+// decides whether a delta is an improvement (B per-capita: smaller is better).
+export interface QuantTrend {
+  indicatorCode: string;
+  /** not_assessed = no current ratio; baseline = no comparable prior; trend = both present. */
+  state: "not_assessed" | "baseline" | "trend";
+  current: number | null;
+  prior: number | null;
+  delta: number | null;
+  /** delta interpreted via direction: true = improved, false = worsened, null = flat/none. */
+  improved: boolean | null;
+  direction: "higher" | "lower";
+  /** Year the prior value came from (for a "vs 20XX" label). */
+  priorYear?: number;
+}
+
+/**
+ * Compare a quantitative indicator's current ratio against a prior submission.
+ * `prior` should be the latest earlier submission's answers (+ its year); pass null if none.
+ */
+export function compareQuantYear(
+  ind: SdgIndicator,
+  currentAnswers: SdgAnswers,
+  prior: { year: number; answers: SdgAnswers } | null,
+): QuantTrend {
+  const cur = computeQuantRaw(ind, currentAnswers);
+  const direction = cur.direction;
+  if (cur.value === null) {
+    return { indicatorCode: ind.code, state: "not_assessed", current: null, prior: null, delta: null, improved: null, direction };
+  }
+  if (!prior) {
+    return { indicatorCode: ind.code, state: "baseline", current: cur.value, prior: null, delta: null, improved: null, direction };
+  }
+  const pr = computeQuantRaw(ind, prior.answers);
+  if (pr.value === null) {
+    return { indicatorCode: ind.code, state: "baseline", current: cur.value, prior: null, delta: null, improved: null, direction, priorYear: prior.year };
+  }
+  const delta = parseFloat((cur.value - pr.value).toFixed(6));
+  const improved = delta === 0 ? null : direction === "higher" ? delta > 0 : delta < 0;
+  return { indicatorCode: ind.code, state: "trend", current: cur.value, prior: pr.value, delta, improved, direction, priorYear: prior.year };
+}
+
+/**
+ * Pick the comparator prior for an indicator: walk earlier years and return the FIRST
+ * (most recent) one where THIS indicator's ratio is computable. Skips years where the
+ * indicator is blank/gated. Returns null if no earlier year has data → caller treats
+ * the current year as the indicator's baseline (first data entry).
+ * `priors` MUST be sorted by year DESCENDING (most recent first).
+ */
+export function resolveQuantPrior(
+  ind: SdgIndicator,
+  priors: { year: number; answers: SdgAnswers }[],
+): { year: number; answers: SdgAnswers } | null {
+  for (const p of priors) {
+    if (computeQuantRaw(ind, p.answers).value !== null) return p;
+  }
+  return null;
+}
+
 export function calcQualScore(ind: SdgIndicator, ans: QualAnswer | undefined): {
   score: number; max: number; pct: number; p1: number; p2: number; p3: number; p4: number; wc: number;
 } {
@@ -166,9 +342,8 @@ export function calcSdgEstimate(sdgNum: number, answers: SdgAnswers): number {
     }
 
     if (ind.type === "QUANTITATIVE") {
-      const ans = answers[ind.code] as QuantAnswer | undefined;
-      const allFilled = !!ans && !!ind.metrics && ind.metrics.every((m) => !!ans[m.key]);
-      if (allFilled) weightedScore += ind.weightInSdg;
+      // Quantitative contributes 0 to the SDG total — normalisation is THE's job, so its
+      // weight is excluded from the estimate entirely (not zeroed-into the denominator).
       continue;
     }
 
@@ -203,12 +378,9 @@ export function calcSdgBreakdown(sdgNum: number, answers: SdgAnswers): SdgScoreB
     }
 
     if (ind.type === "QUANTITATIVE") {
-      const ans = answers[ind.code] as QuantAnswer | undefined;
-      const filled = !!ans && !!ind.metrics && ind.metrics.every((m) => !!ans[m.key]);
-      const contribution = filled ? ind.weightInSdg : 0;
-      byIndicator.push({ indicatorCode: ind.code, type: "QUANTITATIVE", filled, weightInSdg: ind.weightInSdg, contribution });
-      groupWeight[groupKey] = (groupWeight[groupKey] ?? 0) + ind.weightInSdg;
-      groupScore[groupKey] = (groupScore[groupKey] ?? 0) + contribution;
+      // Ratio only (PDF-exact); contributes 0. Excluded from group weight & SDG total so it
+      // does NOT drag the score down (option: excluded, not zeroed). Surfaced for display + trend.
+      byIndicator.push(buildQuantScore(ind, answers));
       continue;
     }
 
