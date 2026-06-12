@@ -61,6 +61,12 @@ enum RecordStatus {
   published
 }
 
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+}
+
 // Event yang dicatat di SubmissionLog (jejak audit submission)
 enum SubmissionEvent {
   created
@@ -231,6 +237,44 @@ model UniversityRecord {
 
   @@unique([sdgId, year])
   @@map("university_records")
+}
+
+// ─────────────── UNIVERSITY RECORD AUDIT (jejak append-only per sel SDG×tahun) ───────────────
+// Tiap CREATE/UPDATE/DELETE university record menulis satu baris di sini.
+// Baris TIDAK PERNAH di-update/hapus — seluruh sejarah utuh untuk telusur
+// "siapa ubah apa, kapan" tanpa salah-tuduh antar validator.
+
+model UniversityRecordAudit {
+  id String @id @default(uuid())
+
+  action AuditAction
+
+  // identitas sel (univ tunggal → cukup sdgId + year). recordId nullable
+  // karena record bisa sudah dihapus saat log dibaca.
+  recordId String?
+  sdgId    Int
+  year     Int
+
+  // snapshot pelaku — sengaja didenormalisasi agar tetap terbaca walau user dihapus
+  actorId   String?
+  actorName String
+  actorRole String
+
+  // diff field [{field, before, after}] + snapshot nilai SETELAH perubahan {title,status,points}
+  changes  Json @default("[]")
+  snapshot Json @default("{}")
+
+  // forensik
+  ipAddress String?
+  userAgent String? @db.Text
+  reason    String? @db.Text
+
+  createdAt DateTime @default(now())
+
+  @@index([sdgId, year])
+  @@index([createdAt])
+  @@index([actorId])
+  @@map("university_record_audits")
 }
 
 // ─────────────── SYSTEM SETTINGS (singleton, id=1) ───────────────
