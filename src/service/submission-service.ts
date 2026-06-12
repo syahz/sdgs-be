@@ -9,12 +9,37 @@ import { calcSdgEstimate } from '../config/sdg-scoring'
 import { unwrapTheAnswers } from '../config/the-answer-key'
 import { MANDATORY_SDGS } from '../config/the-sdg-config'
 import { getSettingsService } from './settings-service'
-import { getSubmissionWindowFromConfig, isWithinWindow } from '../config/submission-window'
+import { getSubmissionWindowFromConfig, isWithinWindow, isCutoffPassed, SubmissionWindow } from '../config/submission-window'
 import { sanitizeJson } from '../utils/sanitize'
 
-async function getWindow() {
+export async function getWindow() {
   const settings = await getSettingsService()
   return getSubmissionWindowFromConfig(settings)
+}
+
+// Tahun yang draft/revisi-nya sudah di-auto-submit di proses ini — cegah kerja berulang.
+// Aman pakai memori: setelah cutoff, create draft baru sudah diblok, jadi tak ada draft baru.
+const cutoffSubmittedYears = new Set<number>()
+
+/**
+ * Jamin draft/revision sudah ke-auto-submit begitu cutoff lewat — dipicu lazily saat
+ * list submission dibaca (mis. validator buka halaman), tanpa nunggu cron 30 menit.
+ * Idempotent & murah: sekali per tahun per proses. Window dibuka lagi → reset.
+ */
+export async function ensureCutoffAutoSubmit(window?: SubmissionWindow): Promise<void> {
+  const win = window ?? (await getWindow())
+  if (!isCutoffPassed(win)) {
+    cutoffSubmittedYears.delete(win.year) // window dibuka kembali — izinkan jalan lagi nanti
+    return
+  }
+  if (cutoffSubmittedYears.has(win.year)) return
+  cutoffSubmittedYears.add(win.year)
+  try {
+    await autoSubmitAtCutoffService(win.year)
+  } catch (err) {
+    cutoffSubmittedYears.delete(win.year) // gagal → izinkan retry
+    throw err
+  }
 }
 
 function computePoints(sdgId: number, theAnswers: Record<string, unknown>, qsAnswers: Record<string, unknown>): number {
@@ -31,6 +56,10 @@ export const getSubmissionsService = async (
   filters: { status?: string; orgUnitId?: string; year?: string; sdgId?: string; submittedByUserId?: string },
   currentUser: UserWithRelations
 ) => {
+  // Pastikan draft/revisi sudah ter-submit kalau cutoff sudah lewat, sebelum daftar dibaca.
+  // Validator jadi langsung lihat submission, bukan draft yang tak bisa di-approve.
+  await ensureCutoffAutoSubmit()
+
   const where: any = {}
 
   // unit_admin: auto-filter to own orgUnit
@@ -75,6 +104,11 @@ export const getSubmissionByIdService = async (
 export const createSubmissionService = async (request: CreateSubmissionRequest, currentUser: UserWithRelations) => {
   const req = Validation.validate(SubmissionValidation.CREATE, request)
 
+  // Setelah cutoff window: dilarang bikin submission baru (cegah draft siluman pasca-cutoff).
+  if (isCutoffPassed(await getWindow())) {
+    throw new ResponseError(400, 'Submission window sudah ditutup', 'WINDOW_CLOSED')
+  }
+
   const existing = await prismaClient.submission.findUnique({
     where: { orgUnitId_sdgId_year: { orgUnitId: currentUser.orgUnitId!, sdgId: req.sdgId, year: req.year } }
   })
@@ -113,6 +147,10 @@ export const updateSubmissionService = async (id: string, request: UpdateSubmiss
   if (item.orgUnitId !== currentUser.orgUnitId) throw new ResponseError(403, 'Akses ditolak', 'FORBIDDEN')
   if (!['draft', 'revision'].includes(item.status)) {
     throw new ResponseError(403, 'Submission tidak dapat diedit pada status saat ini', 'FORBIDDEN')
+  }
+  // Setelah cutoff: draft/revision tak boleh diedit lagi (sudah/akan auto-disubmit ke validator).
+  if (isCutoffPassed(await getWindow())) {
+    throw new ResponseError(400, 'Submission window sudah ditutup', 'WINDOW_CLOSED')
   }
 
   const newTheAnswers = sanitizeJson(req.theAnswers ?? (item.theAnswers as any))
@@ -191,6 +229,11 @@ export const reviewSubmissionService = async (id: string, request: ReviewRequest
 
   if (!['submitted', 'under_review', 'resubmitted'].includes(item.status)) {
     throw new ResponseError(400, 'Status tidak memungkinkan untuk direview', 'INVALID_STATUS')
+  }
+
+  // Setelah cutoff: faculty tak bisa lagi resubmit, jadi validator hanya boleh approve/comment.
+  if (isCutoffPassed(await getWindow()) && ['request_revision', 'reject'].includes(req.action)) {
+    throw new ResponseError(400, 'Setelah cutoff hanya bisa approve atau memberi catatan', 'CUTOFF_PASSED')
   }
 
   const fromStatus = item.status as any
@@ -318,4 +361,102 @@ export const addCommentService = async (
     include: { user: { select: { id: true, name: true, role: true } } }
   })
   return comment
+}
+
+// Status yang diselamatkan year-end (backstop). draft dilewati (auto-submit cutoff yang
+// urus). revision tetap diikutkan kalau-kalau cutoff cron kelewat. rejected dihormati —
+// penolakan sengaja validator, tak boleh dipaksa approved.
+const AUTO_APPROVE_STATUSES = ['submitted', 'under_review', 'resubmitted', 'revision'] as const
+
+/**
+ * Auto-approve semua submission tahun `year` yang belum di-approve (semua status
+ * kecuali draft & approved). Dipakai oleh cron akhir tahun agar data tetap tersimpan
+ * meski validator belum sempat memvalidasi sebelum tahun berganti.
+ *
+ * Aktor log = super_admin pertama (aksi sistem). Idempotent: jika tak ada yang
+ * pending, return count 0.
+ */
+export const autoApproveYearEndService = async (year: number): Promise<{ approved: number; year: number }> => {
+  const pending = await prismaClient.submission.findMany({
+    where: { year, status: { in: AUTO_APPROVE_STATUSES as unknown as any[] } },
+    include: submissionInclude
+  })
+
+  if (pending.length === 0) return { approved: 0, year }
+
+  // Aktor sistem untuk jejak audit (actorUserId wajib). Fallback ke submittedBy bila tak ada super_admin.
+  const systemActor = await prismaClient.user.findFirst({
+    where: { role: 'super_admin' },
+    select: { id: true }
+  })
+
+  for (const item of pending) {
+    const points = computePoints(item.sdgId, item.theAnswers as any, item.qsAnswers as any)
+    const fromStatus = item.status
+
+    await prismaClient.$transaction([
+      prismaClient.submission.update({
+        where: { id: item.id },
+        data: { status: 'approved', points }
+      }),
+      prismaClient.submissionLog.create({
+        data: {
+          submissionId: item.id,
+          event: 'approved',
+          fromStatus,
+          toStatus: 'approved',
+          actorUserId: systemActor?.id ?? item.submittedByUserId,
+          note: 'Auto-approve akhir tahun (cron 24 Des) — belum divalidasi sebelum tahun berganti'
+        }
+      })
+    ])
+  }
+
+  return { approved: pending.length, year }
+}
+
+/**
+ * Auto-submit saat cutoff window: semua `draft` → `submitted`, `revision` → `resubmitted`,
+ * agar masuk antrian validator walau faculty tak sempat klik submit. Sengaja mem-bypass
+ * cek mandatory SDG & window — seberapapun lengkapnya, data tetap dikirim.
+ *
+ * Aktor log = super_admin (aksi sistem). Idempotent: tanpa draft/revision → count 0.
+ */
+export const autoSubmitAtCutoffService = async (year: number): Promise<{ submitted: number; year: number }> => {
+  const pending = await prismaClient.submission.findMany({
+    where: { year, status: { in: ['draft', 'revision'] } },
+    select: { id: true, status: true, submittedByUserId: true }
+  })
+
+  if (pending.length === 0) return { submitted: 0, year }
+
+  const systemActor = await prismaClient.user.findFirst({
+    where: { role: 'super_admin' },
+    select: { id: true }
+  })
+
+  const now = new Date()
+  for (const item of pending) {
+    const fromStatus = item.status
+    const toStatus = fromStatus === 'revision' ? 'resubmitted' : 'submitted'
+
+    await prismaClient.$transaction([
+      prismaClient.submission.update({
+        where: { id: item.id },
+        data: { status: toStatus, submittedAt: now }
+      }),
+      prismaClient.submissionLog.create({
+        data: {
+          submissionId: item.id,
+          event: toStatus === 'resubmitted' ? 'resubmitted' : 'submitted',
+          fromStatus,
+          toStatus,
+          actorUserId: systemActor?.id ?? item.submittedByUserId,
+          note: 'Auto-submit cutoff — dikirim otomatis ke validator saat window ditutup'
+        }
+      })
+    ])
+  }
+
+  return { submitted: pending.length, year }
 }

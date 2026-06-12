@@ -13,6 +13,12 @@ import { UserWithRelations } from '../type/user-request'
 import { calcSdgEstimate } from '../config/sdg-scoring'
 import { unwrapTheAnswers } from '../config/the-answer-key'
 import { sanitizeJson } from '../utils/sanitize'
+import { recordAudit, AuditContext } from './audit-log-service'
+import { buildChanges, buildSnapshot } from '../model/audit-log-model'
+
+function scalarsOf(r: { title: string; status: string; points: number; year: number; sdgId: number }) {
+  return { title: r.title, status: r.status, points: r.points, year: r.year, sdgId: r.sdgId }
+}
 
 const recordInclude = {
   createdBy: { select: { id: true, name: true } }
@@ -43,7 +49,11 @@ export const getUniversityRecordByIdService = async (id: string) => {
   return toUniversityRecordResponse(item as UniversityRecordWithUser)
 }
 
-export const createUniversityRecordService = async (request: CreateUniversityRecordRequest, currentUser: UserWithRelations) => {
+export const createUniversityRecordService = async (
+  request: CreateUniversityRecordRequest,
+  currentUser: UserWithRelations,
+  ctx: AuditContext
+) => {
   const req = Validation.validate(UniversityRecordValidation.CREATE, request)
 
   const existing = await prismaClient.universityRecord.findFirst({
@@ -68,10 +78,26 @@ export const createUniversityRecordService = async (request: CreateUniversityRec
     },
     include: recordInclude
   })
+
+  const after = scalarsOf(item)
+  await recordAudit({
+    action: 'CREATE',
+    recordId: item.id,
+    sdgId: item.sdgId,
+    year: item.year,
+    changes: buildChanges(null, after),
+    snapshot: buildSnapshot(after),
+    ctx
+  })
+
   return toUniversityRecordResponse(item as UniversityRecordWithUser)
 }
 
-export const updateUniversityRecordService = async (id: string, request: UpdateUniversityRecordRequest) => {
+export const updateUniversityRecordService = async (
+  id: string,
+  request: UpdateUniversityRecordRequest,
+  ctx: AuditContext
+) => {
   const req = Validation.validate(UniversityRecordValidation.UPDATE, request)
 
   const item = await prismaClient.universityRecord.findUnique({ where: { id }, include: recordInclude })
@@ -80,6 +106,8 @@ export const updateUniversityRecordService = async (id: string, request: UpdateU
   const newSdgId = req.sdgId ?? item.sdgId
   const newTheAnswers = sanitizeJson(req.theAnswers ?? (item.theAnswers as any))
   const points = computePoints(newSdgId, newTheAnswers)
+
+  const before = scalarsOf(item)
 
   const updated = await prismaClient.universityRecord.update({
     where: { id },
@@ -97,12 +125,44 @@ export const updateUniversityRecordService = async (id: string, request: UpdateU
     },
     include: recordInclude
   })
+
+  const after = scalarsOf(updated)
+  const changes = buildChanges(before, after)
+  // hanya catat bila ada perubahan field yang dilacak
+  if (changes.length > 0) {
+    await recordAudit({
+      action: 'UPDATE',
+      recordId: updated.id,
+      sdgId: updated.sdgId,
+      year: updated.year,
+      changes,
+      snapshot: buildSnapshot(after),
+      ctx
+    })
+  }
+
   return toUniversityRecordResponse(updated as UniversityRecordWithUser)
 }
 
-export const deleteUniversityRecordService = async (id: string): Promise<{ message: string }> => {
+export const deleteUniversityRecordService = async (
+  id: string,
+  ctx: AuditContext
+): Promise<{ message: string }> => {
   const item = await prismaClient.universityRecord.findUnique({ where: { id } })
   if (!item) throw new ResponseError(404, 'University record tidak ditemukan', 'NOT_FOUND')
+
+  const before = scalarsOf(item)
   await prismaClient.universityRecord.delete({ where: { id } })
+
+  await recordAudit({
+    action: 'DELETE',
+    recordId: item.id,
+    sdgId: item.sdgId,
+    year: item.year,
+    changes: buildChanges(before, null),
+    snapshot: {},
+    ctx
+  })
+
   return { message: 'University record berhasil dihapus' }
 }
