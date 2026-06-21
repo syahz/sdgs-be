@@ -13,6 +13,7 @@ import {
 import { UserRequest } from '../type/user-request'
 import { ResponseError } from '../error/response-error'
 import { FRONTEND_URL, NODE_ENV } from '../config'
+import { logger } from '../utils/logger'
 import {
   keycloakEnabled,
   generateState,
@@ -104,6 +105,7 @@ export const keycloakCallbackController = async (req: Request, res: Response, ne
     await loginKeycloakService({ email: info.email }, ip, ua, res)
     return res.redirect(`${login}?oauth=success`)
   } catch (e) {
+    logger.error('Keycloak callback error:', e)
     // Email belum terdaftar → tampilkan peringatan di halaman login.
     if (e instanceof ResponseError && e.code === 'UNAUTHORIZED') {
       return res.redirect(`${login}?error=unregistered_email`)
