@@ -12,7 +12,7 @@ import {
 } from '../service/auth-service'
 import { UserRequest } from '../type/user-request'
 import { ResponseError } from '../error/response-error'
-import { FRONTEND_URL, NODE_ENV } from '../config'
+import { FRONTEND_URL } from '../config'
 import { logger } from '../utils/logger'
 import {
   keycloakEnabled,
@@ -20,11 +20,11 @@ import {
   generatePkce,
   buildAuthorizeUrl,
   exchangeCodeForToken,
-  fetchUserInfo
+  fetchUserInfo,
+  savePkceState,
+  takePkceVerifier
 } from '../config/keycloak'
 
-/** Cookie sementara penyimpan state + PKCE verifier selama round-trip Keycloak. */
-const KC_OAUTH_COOKIE = 'kc_oauth'
 const LOGIN_PATH = () => `${FRONTEND_URL ?? ''}/login`
 
 export const loginController = async (req: Request, res: Response, next: NextFunction) => {
@@ -51,18 +51,11 @@ export const keycloakStartController = (req: Request, res: Response, next: NextF
     const state = generateState()
     const { verifier, challenge } = generatePkce()
 
-    // Cookie state+verifier: dibaca lagi saat callback. sameSite=lax cukup —
-    // callback datang sebagai navigasi top-level GET dari Keycloak.
-    res.cookie(KC_OAUTH_COOKIE, JSON.stringify({ state, verifier }), {
-      httpOnly: true,
-      secure: NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 10 * 60 * 1000,
-      path: '/'
-    })
+    // Simpan verifier server-side keyed by state — cookie tidak survive Next.js
+    // proxy. Dibaca lagi saat callback via param `state` yang balik dari Keycloak.
+    savePkceState(state, verifier)
 
     const authorizeUrl = buildAuthorizeUrl(state, challenge)
-    logger.info(`[KC_START] setting kc_oauth cookie, returning url`)
     res.status(200).json({ url: authorizeUrl })
   } catch (e) {
     next(e)
@@ -77,29 +70,19 @@ export const keycloakCallbackController = async (req: Request, res: Response, ne
     const code = typeof req.query.code === 'string' ? req.query.code : undefined
     const state = typeof req.query.state === 'string' ? req.query.state : undefined
     const oauthError = req.query.error
-    const raw = req.cookies?.[KC_OAUTH_COOKIE]
 
-    logger.info(`[KC_CALLBACK] query=${JSON.stringify(req.query)} cookies_keys=${JSON.stringify(Object.keys(req.cookies ?? {}))}`)
-
-    res.clearCookie(KC_OAUTH_COOKIE, { path: '/' })
-
-    if (oauthError || !code || !state || !raw) {
-      logger.warn(`[KC_CALLBACK] early_exit oauthError=${oauthError} code=${!!code} state=${!!state} raw=${!!raw}`)
+    if (oauthError || !code || !state) {
       return res.redirect(`${login}?error=oauth`)
     }
 
-    let saved: { state?: string; verifier?: string }
-    try {
-      saved = JSON.parse(raw)
-    } catch {
-      return res.redirect(`${login}?error=oauth`)
-    }
-    // Cek state anti-CSRF.
-    if (!saved.state || !saved.verifier || saved.state !== state) {
+    // Ambil verifier dari store server-side (sekali pakai). State cocok = anti-CSRF.
+    const verifier = takePkceVerifier(state)
+    if (!verifier) {
+      logger.warn('[KC_CALLBACK] verifier not found / expired for state')
       return res.redirect(`${login}?error=oauth`)
     }
 
-    const token = await exchangeCodeForToken(code, saved.verifier)
+    const token = await exchangeCodeForToken(code, verifier)
     const info = await fetchUserInfo(token.access_token)
 
     const ip = req.ip ?? req.socket.remoteAddress ?? null

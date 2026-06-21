@@ -39,6 +39,33 @@ export function generateState(): string {
   return crypto.randomBytes(16).toString('base64url')
 }
 
+/**
+ * Penyimpan PKCE verifier selama round-trip Keycloak, keyed by `state`.
+ * Server-side (bukan cookie) karena cookie tidak survive Next.js rewrite proxy
+ * (Set-Cookie dari destination di-strip). `state` selalu balik dari Keycloak
+ * di query callback → tidak perlu cookie sama sekali.
+ *
+ * ponytail: in-memory Map cukup untuk PM2 fork mode (1 instance). Kalau pindah
+ * cluster mode / multi-instance, start & callback bisa kena worker beda → pakai
+ * Redis/DB. TTL 10 menit, dibersihkan lazy saat get.
+ */
+interface PkceEntry { verifier: string; expiresAt: number }
+const pkceStore = new Map<string, PkceEntry>()
+const PKCE_TTL_MS = 10 * 60 * 1000
+
+export function savePkceState(state: string, verifier: string): void {
+  pkceStore.set(state, { verifier, expiresAt: Date.now() + PKCE_TTL_MS })
+}
+
+/** Ambil verifier sekali pakai. Hapus setelah dibaca; null bila tak ada/kedaluwarsa. */
+export function takePkceVerifier(state: string): string | null {
+  const entry = pkceStore.get(state)
+  if (!entry) return null
+  pkceStore.delete(state)
+  if (entry.expiresAt < Date.now()) return null
+  return entry.verifier
+}
+
 /** PKCE — verifier rahasia + challenge S256 yang dikirim ke authorize endpoint. */
 export function generatePkce(): { verifier: string; challenge: string } {
   const verifier = crypto.randomBytes(32).toString('base64url')
