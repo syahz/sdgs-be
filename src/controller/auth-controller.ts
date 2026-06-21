@@ -61,7 +61,9 @@ export const keycloakStartController = (req: Request, res: Response, next: NextF
       path: '/'
     })
 
-    res.redirect(buildAuthorizeUrl(state, challenge))
+    const authorizeUrl = buildAuthorizeUrl(state, challenge)
+    logger.info(`[KC_START] setting kc_oauth cookie, redirect to ${authorizeUrl.substring(0, 80)}...`)
+    res.redirect(authorizeUrl)
   } catch (e) {
     next(e)
   }
@@ -77,12 +79,12 @@ export const keycloakCallbackController = async (req: Request, res: Response, ne
     const oauthError = req.query.error
     const raw = req.cookies?.[KC_OAUTH_COOKIE]
 
-    logger.info('[KC_CALLBACK] query=%o cookies_keys=%o', req.query, Object.keys(req.cookies ?? {}))
+    logger.info(`[KC_CALLBACK] query=${JSON.stringify(req.query)} cookies_keys=${JSON.stringify(Object.keys(req.cookies ?? {}))}`)
 
     res.clearCookie(KC_OAUTH_COOKIE, { path: '/' })
 
     if (oauthError || !code || !state || !raw) {
-      logger.warn('[KC_CALLBACK] early_exit oauthError=%o code=%o state=%o raw=%o', oauthError, !!code, !!state, !!raw)
+      logger.warn(`[KC_CALLBACK] early_exit oauthError=${oauthError} code=${!!code} state=${!!state} raw=${!!raw}`)
       return res.redirect(`${login}?error=oauth`)
     }
 
