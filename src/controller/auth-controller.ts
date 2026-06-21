@@ -75,11 +75,14 @@ export const keycloakCallbackController = async (req: Request, res: Response, ne
     const code = typeof req.query.code === 'string' ? req.query.code : undefined
     const state = typeof req.query.state === 'string' ? req.query.state : undefined
     const oauthError = req.query.error
-
     const raw = req.cookies?.[KC_OAUTH_COOKIE]
+
+    logger.info('[KC_CALLBACK] query=%o cookies_keys=%o', req.query, Object.keys(req.cookies ?? {}))
+
     res.clearCookie(KC_OAUTH_COOKIE, { path: '/' })
 
     if (oauthError || !code || !state || !raw) {
+      logger.warn('[KC_CALLBACK] early_exit oauthError=%o code=%o state=%o raw=%o', oauthError, !!code, !!state, !!raw)
       return res.redirect(`${login}?error=oauth`)
     }
 
