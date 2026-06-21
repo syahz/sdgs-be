@@ -62,8 +62,8 @@ export const keycloakStartController = (req: Request, res: Response, next: NextF
     })
 
     const authorizeUrl = buildAuthorizeUrl(state, challenge)
-    logger.info(`[KC_START] setting kc_oauth cookie, redirect to ${authorizeUrl.substring(0, 80)}...`)
-    res.redirect(authorizeUrl)
+    logger.info(`[KC_START] setting kc_oauth cookie, returning url`)
+    res.status(200).json({ url: authorizeUrl })
   } catch (e) {
     next(e)
   }
