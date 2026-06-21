@@ -1,8 +1,8 @@
 import { Router } from 'express'
-import passport from 'passport'
 import {
   loginController,
-  googleCallbackController,
+  keycloakStartController,
+  keycloakCallbackController,
   refreshController,
   activityController,
   logoutController,
@@ -13,7 +13,6 @@ import {
 } from '../../controller/auth-controller'
 import { authRequired } from '../../middleware/auth-middleware'
 import { loginLimiter } from '../../middleware/rate-limit'
-import { FRONTEND_URL } from '../../config'
 
 const router = Router()
 
@@ -23,13 +22,10 @@ router.post('/refresh', refreshController)
 router.post('/activity', activityController)
 router.delete('/logout', logoutController)
 
-// Google OAuth
-router.get('/google', passport.authenticate('google', { scope: ['profile', 'email'], session: false }))
-router.get(
-  '/google/callback',
-  passport.authenticate('google', { session: false, failureRedirect: `${FRONTEND_URL ?? ''}/login?error=oauth` }),
-  googleCallbackController
-)
+// Keycloak (IAM Universitas) — alur OIDC dijalankan manual (tanpa passport).
+// Diakses lewat origin FE: /api/auth/keycloak  &  /api/auth/keycloak/callback
+router.get('/keycloak', keycloakStartController)
+router.get('/keycloak/callback', keycloakCallbackController)
 
 // Protected
 router.get('/me', authRequired, getMeController)

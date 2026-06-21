@@ -1,4 +1,4 @@
-import { User, OrgUnit } from '@prisma/client'
+import { User } from '@prisma/client'
 
 export interface CreateUserRequest {
   name: string
@@ -32,8 +32,6 @@ export type UserResponse = {
   isLocked: boolean
   lockedUntil: string | null
 }
-
-export type UserWithOrgUnit = User & { orgUnit: OrgUnit | null }
 
 export function toUserResponse(user: User): UserResponse {
   return {

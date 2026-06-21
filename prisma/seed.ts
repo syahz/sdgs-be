@@ -53,7 +53,20 @@ async function main() {
       status: 'active'
     }
   })
+  await prisma.user.upsert({
+    where: { email: 'admin2@ub.ac.id' },
+    update: {},
+    create: {
+      name: 'Admin Kedua',
+      email: 'admin2@ub.ac.id',
+      password: hashedPassword,
+      role: 'super_admin',
+      avatarInitials: 'AK',
+      status: 'active'
+    }
+  })
   console.log('Seeded super_admin: admin@ub.ac.id / admin123')
+  console.log('Seeded super_admin: admin2@ub.ac.id / admin123')
 
   console.log('Seeding default SystemSettings...')
   const existingSettings = await prisma.systemSettings.findFirst()

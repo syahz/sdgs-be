@@ -1,8 +1,4 @@
-import { ReviewComment, User } from '@prisma/client'
-
-export type ReviewCommentWithUser = ReviewComment & {
-  user: { id: string; name: string; role: string }
-}
+import { ReviewComment } from '@prisma/client'
 
 export type ReviewCommentResponse = {
   id: string
@@ -15,7 +11,9 @@ export type ReviewCommentResponse = {
   createdAt: Date
 }
 
-export function toReviewCommentResponse(c: ReviewCommentWithUser): ReviewCommentResponse {
+export function toReviewCommentResponse(
+  c: ReviewComment & { user: { id: string; name: string; role: string } }
+): ReviewCommentResponse {
   return {
     id: c.id,
     submissionId: c.submissionId,

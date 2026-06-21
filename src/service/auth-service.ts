@@ -37,17 +37,6 @@ function cookieOptions() {
   return COOKIE_DOMAIN ? { ...base, domain: COOKIE_DOMAIN } : base
 }
 
-function cookieOptionsGoogleCallback() {
-  const base = {
-    httpOnly: true,
-    secure: true,
-    sameSite: 'none' as const,
-    maxAge: REFRESH_EXPIRES * 1000,
-    path: '/'
-  }
-  return COOKIE_DOMAIN ? { ...base, domain: COOKIE_DOMAIN } : base
-}
-
 export function clearAuthCookies(res: Response) {
   const cookiesToClear = ['refresh_token']
   cookiesToClear.forEach((name) => {
@@ -73,7 +62,7 @@ async function pruneAndEnforce(userId: string) {
   }
 }
 
-async function createSessionForUser(user: any, ipAddress: string | null, userAgent: string | null, res: Response, isGoogleAuth = false): Promise<AuthResponse> {
+async function createSessionForUser(user: any, ipAddress: string | null, userAgent: string | null, res: Response): Promise<AuthResponse> {
   const accessToken = signAccessToken({ userId: user.id, role: user.role, orgUnitId: user.orgUnitId })
 
   const refreshPlain = createSessionToken()
@@ -85,8 +74,7 @@ async function createSessionForUser(user: any, ipAddress: string | null, userAge
     data: { userId: user.id, tokenHash, expiresAt, ipAddress, userAgent, familyId, idleExpiresAt: idleDeadline() }
   })
 
-  const opts = isGoogleAuth ? cookieOptionsGoogleCallback() : cookieOptions()
-  res.cookie('refresh_token', refreshPlain, opts)
+  res.cookie('refresh_token', refreshPlain, cookieOptions())
 
   return {
     accessToken,
@@ -131,8 +119,8 @@ export const loginService = async (request: LoginRequest, ipAddress: string | nu
     }
   }
   if (!user.password) {
-    auditAuth({ action: 'LOGIN_FAILED', email: user.email, userId: user.id, ip: ipAddress, userAgent, detail: 'google_only' })
-    throw new ResponseError(401, 'This account uses Google login only', 'GOOGLE_ONLY')
+    auditAuth({ action: 'LOGIN_FAILED', email: user.email, userId: user.id, ip: ipAddress, userAgent, detail: 'sso_only' })
+    throw new ResponseError(401, 'This account uses SSO login only', 'SSO_ONLY')
   }
 
   const match = bcrypt.compareSync(req.password, user.password)
@@ -168,13 +156,27 @@ export const loginService = async (request: LoginRequest, ipAddress: string | nu
   return result
 }
 
-export const loginGoogleService = async (googleUser: any, ipAddress: string | null, userAgent: string | null, res: Response): Promise<AuthResponse> => {
+/**
+ * Login via Keycloak (IAM Universitas). Identitas (email) sudah dibuktikan
+ * Keycloak; di sini hanya cek apakah email terdaftar & aktif di sistem ini,
+ * lalu terbitkan sesi milik sistem (cookie refresh_token + access token).
+ * Tidak memakai sesi Keycloak sama sekali.
+ *
+ * Cookie pakai opsi default (sameSite=lax, host-only) karena seluruh alur
+ * Keycloak melewati proxy FE (origin sama dari sisi browser).
+ */
+export const loginKeycloakService = async (kcUser: { email?: string }, ipAddress: string | null, userAgent: string | null, res: Response): Promise<AuthResponse> => {
+  if (!kcUser.email) {
+    auditAuth({ action: 'LOGIN_FAILED', ip: ipAddress, userAgent, detail: 'keycloak_no_email' })
+    throw new ResponseError(401, 'No email from Keycloak', 'UNAUTHORIZED')
+  }
+
   const user = await prismaClient.user.findUnique({
-    where: { email: googleUser.email },
+    where: { email: kcUser.email },
     include: { orgUnit: true }
   })
   if (!user) {
-    auditAuth({ action: 'LOGIN_FAILED', email: googleUser?.email, ip: ipAddress, userAgent, detail: 'google_unregistered' })
+    auditAuth({ action: 'LOGIN_FAILED', email: kcUser.email, ip: ipAddress, userAgent, detail: 'keycloak_unregistered' })
     throw new ResponseError(401, 'User not found', 'UNAUTHORIZED')
   }
 
@@ -184,8 +186,8 @@ export const loginGoogleService = async (googleUser: any, ipAddress: string | nu
   }
 
   await pruneAndEnforce(user.id)
-  const result = await createSessionForUser(user, ipAddress, userAgent, res, true)
-  auditAuth({ action: 'LOGIN_GOOGLE', email: user.email, userId: user.id, ip: ipAddress, userAgent })
+  const result = await createSessionForUser(user, ipAddress, userAgent, res)
+  auditAuth({ action: 'LOGIN_KEYCLOAK', email: user.email, userId: user.id, ip: ipAddress, userAgent })
   return result
 }
 

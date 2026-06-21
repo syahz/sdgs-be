@@ -6,7 +6,9 @@ import rateLimit, { ipKeyGenerator } from 'express-rate-limit'
  */
 export const globalLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 menit
-  limit: 300, // 300 request / menit / IP
+  // Default 300/menit/IP. Bisa dinaikkan via RATE_LIMIT_GLOBAL saat audit scan (mis. 100000),
+  // tanpa perlu mengedit kode. Kembalikan/hapus env-nya setelah audit.
+  limit: Number(process.env.RATE_LIMIT_GLOBAL ?? 300),
   standardHeaders: 'draft-7',
   legacyHeaders: false,
   message: { message: 'Terlalu banyak permintaan, coba lagi nanti.', code: 'RATE_LIMITED' }

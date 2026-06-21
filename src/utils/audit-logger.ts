@@ -40,6 +40,7 @@ const auditLogger = winston.createLogger({
 export type AuthAuditAction =
   | 'LOGIN_SUCCESS'
   | 'LOGIN_GOOGLE'
+  | 'LOGIN_KEYCLOAK'
   | 'LOGIN_FAILED'
   | 'LOGOUT'
 
