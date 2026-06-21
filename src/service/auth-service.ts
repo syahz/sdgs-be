@@ -38,10 +38,18 @@ function cookieOptions() {
 }
 
 export function clearAuthCookies(res: Response) {
+  // Atribut harus match saat set (secure + sameSite), kalau tidak Chrome modern
+  // bisa abaikan Set-Cookie penghapus → cookie nyangkut. maxAge tidak perlu.
+  const clearOpts = {
+    httpOnly: true,
+    secure: NODE_ENV === 'production',
+    sameSite: 'lax' as const,
+    path: '/'
+  }
   const cookiesToClear = ['refresh_token']
   cookiesToClear.forEach((name) => {
-    res.clearCookie(name, { path: '/' })
-    if (COOKIE_DOMAIN) res.clearCookie(name, { path: '/', domain: COOKIE_DOMAIN })
+    res.clearCookie(name, clearOpts)
+    if (COOKIE_DOMAIN) res.clearCookie(name, { ...clearOpts, domain: COOKIE_DOMAIN })
   })
 }
 
