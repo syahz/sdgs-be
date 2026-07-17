@@ -5,14 +5,15 @@
  *  - Sistem ini TIDAK memakai sesi Keycloak. Keycloak hanya dipakai untuk
  *    membuktikan identitas (email) sekali saat login. Otorisasi & sesi
  *    sepenuhnya milik sistem ini (cookie refresh_token + access token JWT).
- *  - `redirect_uri` harus menunjuk ke ORIGIN FRONT-END (yang mem-proxy /api ke
- *    BE lewat Next.js rewrites), bukan ke origin BE langsung. Ini agar Set-Cookie
- *    `refresh_token` jatuh di origin FE (host-only) — konsisten dengan login
- *    email/password. Lihat next.config.ts → rewrites.
+ *  - `redirect_uri` menunjuk ke ORIGIN BE (subdomain API). Browser memanggil BE
+ *    langsung, tidak lewat proxy FE, jadi Set-Cookie `refresh_token` tidak
+ *    di-strip. Cookie host-only di subdomain API; tetap terkirim dari FE karena
+ *    keduanya same-site (sama-sama di bawah ub.ac.id) + withCredentials.
  *
  * Endpoint OIDC diturunkan dari issuer realm standar Keycloak:
  *   <issuer>/protocol/openid-connect/{auth,token,userinfo,logout}
- * di mana <issuer> = https://<host-keycloak>/realms/<nama-realm>
+ * di mana <issuer> = https://<host-keycloak>[/auth]/realms/<nama-realm>
+ * IAM UB memakai Keycloak legacy (<17) → ada base path /auth sebelum /realms.
  */
 
 import crypto from 'crypto'

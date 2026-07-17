@@ -170,8 +170,8 @@ export const loginService = async (request: LoginRequest, ipAddress: string | nu
  * lalu terbitkan sesi milik sistem (cookie refresh_token + access token).
  * Tidak memakai sesi Keycloak sama sekali.
  *
- * Cookie pakai opsi default (sameSite=lax, host-only) karena seluruh alur
- * Keycloak melewati proxy FE (origin sama dari sisi browser).
+ * Cookie pakai opsi default (sameSite=lax, host-only) — cukup karena FE & BE
+ * same-site (sama-sama di bawah ub.ac.id), meski beda origin.
  */
 export const loginKeycloakService = async (kcUser: { email?: string }, ipAddress: string | null, userAgent: string | null, res: Response): Promise<AuthResponse> => {
   if (!kcUser.email) {
