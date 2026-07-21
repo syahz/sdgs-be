@@ -58,6 +58,7 @@ export type AuditLogResponse = {
   recordId: string | null
   sdgId: number
   year: number
+  orgUnitName: string | null
   actorId: string | null
   actorName: string
   actorRole: string
@@ -76,6 +77,7 @@ export function toAuditLogResponse(a: UniversityRecordAudit): AuditLogResponse {
     recordId: a.recordId,
     sdgId: a.sdgId,
     year: a.year,
+    orgUnitName: a.orgUnitName,
     actorId: a.actorId,
     actorName: a.actorName,
     actorRole: a.actorRole,

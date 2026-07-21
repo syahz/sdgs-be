@@ -8,9 +8,11 @@ import { UserWithRelations } from '../type/user-request'
 import { calcSdgEstimate } from '../config/sdg-scoring'
 import { unwrapTheAnswers } from '../config/the-answer-key'
 import { MANDATORY_SDGS } from '../config/the-sdg-config'
-import { getSettingsService } from './settings-service'
+import { getSettingsService, assertDeletePin } from './settings-service'
 import { getSubmissionWindowFromConfig, isWithinWindow, isCutoffPassed, SubmissionWindow } from '../config/submission-window'
 import { sanitizeJson } from '../utils/sanitize'
+import { recordAudit, AuditContext } from './audit-log-service'
+import { buildChanges, buildSnapshot } from '../model/audit-log-model'
 
 export async function getWindow() {
   const settings = await getSettingsService()
@@ -459,4 +461,62 @@ export const autoSubmitAtCutoffService = async (year: number): Promise<{ submitt
   }
 
   return { submitted: pending.length, year }
+}
+
+// ─────────────── DELETE (super admin, PIN-gated, audited) ───────────────
+
+type DeletableSubmission = {
+  id: string
+  sdgId: number
+  year: number
+  status: string
+  points: number
+  title: string
+  orgUnit: { name: string }
+}
+
+/**
+ * Hapus satu submission + tulis jejak audit ke activity log. Cascade schema
+ * ikut menghapus SubmissionLog & ReviewComment-nya (onDelete: Cascade).
+ * Audit ditulis SETELAH delete sukses agar tak mencatat hapus yang gagal.
+ */
+async function deleteAndAudit(sub: DeletableSubmission, ctx: AuditContext) {
+  const before = { title: sub.title, status: sub.status, points: sub.points, year: sub.year, sdgId: sub.sdgId }
+  await prismaClient.submission.delete({ where: { id: sub.id } })
+  await recordAudit({
+    action: 'DELETE',
+    recordId: null,
+    sdgId: sub.sdgId,
+    year: sub.year,
+    orgUnitName: sub.orgUnit.name,
+    changes: buildChanges(before, null),
+    snapshot: buildSnapshot(before),
+    ctx
+  })
+}
+
+/** Hapus satu submission (per-SDG) milik unit kerja. */
+export const deleteSubmissionService = async (id: string, pin: string | undefined, ctx: AuditContext) => {
+  await assertDeletePin(pin)
+  const item = await prismaClient.submission.findUnique({ where: { id }, include: submissionInclude })
+  if (!item) throw new ResponseError(404, 'Submission tidak ditemukan', 'NOT_FOUND')
+  await deleteAndAudit(item as unknown as DeletableSubmission, ctx)
+  return { deleted: 1, sdgId: item.sdgId, year: item.year, orgUnitName: item.orgUnit.name }
+}
+
+/** Hapus SELURUH submission satu unit kerja untuk satu tahun (per-fakultas). */
+export const deleteFacultySubmissionsService = async (orgUnitId: string, year: number, pin: string | undefined, ctx: AuditContext) => {
+  await assertDeletePin(pin)
+  if (!Number.isInteger(year)) throw new ResponseError(400, 'Tahun wajib diisi', 'BAD_REQUEST')
+
+  const orgUnit = await prismaClient.orgUnit.findUnique({ where: { id: orgUnitId } })
+  if (!orgUnit) throw new ResponseError(404, 'Unit kerja tidak ditemukan', 'NOT_FOUND')
+
+  const items = await prismaClient.submission.findMany({ where: { orgUnitId, year }, include: submissionInclude })
+  if (items.length === 0) throw new ResponseError(404, 'Tidak ada data submission untuk unit & tahun ini', 'NOT_FOUND')
+
+  for (const item of items) {
+    await deleteAndAudit(item as unknown as DeletableSubmission, ctx)
+  }
+  return { deleted: items.length, orgUnitName: orgUnit.name, year }
 }

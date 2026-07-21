@@ -24,6 +24,8 @@ interface RecordAuditParams {
   changes: FieldChange[]
   snapshot: RecordSnapshot
   ctx: AuditContext
+  // Terisi hanya untuk jejak hapus submission unit kerja; null = data universitas.
+  orgUnitName?: string | null
 }
 
 /**
@@ -38,6 +40,7 @@ export async function recordAudit(params: RecordAuditParams): Promise<void> {
         recordId: params.recordId,
         sdgId: params.sdgId,
         year: params.year,
+        orgUnitName: params.orgUnitName ?? null,
         actorId: params.ctx.actorId ?? null,
         actorName: params.ctx.actorName,
         actorRole: params.ctx.actorRole,

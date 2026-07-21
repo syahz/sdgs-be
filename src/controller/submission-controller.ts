@@ -8,9 +8,26 @@ import {
   reviewSubmissionService,
   getSubmissionLogsService,
   getSubmissionCommentsService,
-  addCommentService
+  addCommentService,
+  deleteSubmissionService,
+  deleteFacultySubmissionsService
 } from '../service/submission-service'
+import { AuditContext } from '../service/audit-log-service'
 import { UserRequest } from '../type/user-request'
+
+/** Konteks audit (pelaku + forensik) dari request — untuk jejak hapus. */
+function auditCtx(req: Request): AuditContext {
+  const user = (req as UserRequest).user
+  const reason = typeof req.body?.reason === 'string' ? req.body.reason : null
+  return {
+    actorId: user?.id ?? null,
+    actorName: user?.name ?? 'Unknown',
+    actorRole: user?.role ?? 'unknown',
+    ip: req.ip ?? req.socket.remoteAddress ?? null,
+    userAgent: req.headers['user-agent'] ?? null,
+    reason
+  }
+}
 
 export const getSubmissionsController = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -107,6 +124,28 @@ export const addCommentController = async (req: Request, res: Response, next: Ne
     const id = typeof req.params.id === 'string' ? req.params.id : req.params.id[0]
     const result = await addCommentService(id, req.body, currentUser)
     res.status(201).json({ data: result })
+  } catch (e) {
+    next(e)
+  }
+}
+
+export const deleteSubmissionController = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const id = typeof req.params.id === 'string' ? req.params.id : req.params.id[0]
+    const result = await deleteSubmissionService(id, req.body?.pin, auditCtx(req))
+    res.status(200).json({ data: result })
+  } catch (e) {
+    next(e)
+  }
+}
+
+export const deleteFacultySubmissionsController = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const rawId = req.params.orgUnitId
+    const orgUnitId = typeof rawId === 'string' ? rawId : rawId[0]
+    const year = parseInt(String(req.query.year))
+    const result = await deleteFacultySubmissionsService(orgUnitId, year, req.body?.pin, auditCtx(req))
+    res.status(200).json({ data: result })
   } catch (e) {
     next(e)
   }

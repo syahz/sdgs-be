@@ -255,6 +255,11 @@ model UniversityRecordAudit {
   sdgId    Int
   year     Int
 
+  // null = jejak data universitas (UniversityRecord). Terisi = jejak hapus
+  // submission unit kerja oleh super admin — simpan nama unit agar terbaca
+  // di activity log walau unit/submission sudah dihapus.
+  orgUnitName String?
+
   // snapshot pelaku — sengaja didenormalisasi agar tetap terbaca walau user dihapus
   actorId   String?
   actorName String
@@ -286,6 +291,10 @@ model SystemSettings {
   windowStartDay   Int
   windowEndMonth   Int
   windowEndDay     Int
+
+  // PIN 6-angka (bcrypt hash) — gerbang konfirmasi super admin sebelum hapus
+  // data submission. null = belum diatur (hapus terblokir sampai PIN dibuat).
+  deletePinHash String?
 
   updatedAt DateTime @updatedAt
 
