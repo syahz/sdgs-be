@@ -1,4 +1,5 @@
 import bcrypt from 'bcryptjs'
+import { Prisma } from '@prisma/client'
 import { prismaClient } from '../application/database'
 import { ResponseError } from '../error/response-error'
 import { Validation } from '../validation/Validation'
@@ -116,6 +117,39 @@ export const updateUserService = async (
 export const deleteUserService = async (id: string): Promise<{ message: string }> => {
   const user = await prismaClient.user.findUnique({ where: { id } })
   if (!user) throw new ResponseError(404, 'User tidak ditemukan', 'NOT_FOUND')
-  await prismaClient.user.delete({ where: { id } })
+
+  // Cek dependensi dulu (deterministik). FK di schema pakai RESTRICT → Postgres
+  // lempar 23001 yang TIDAK dipetakan Prisma ke P2003, jadi andalkan hitung ini,
+  // bukan error-type. refreshTokens dikecualikan (onDelete: Cascade).
+  const [submissions, reviewComments, universityRecords, submissionLogs] = await Promise.all([
+    prismaClient.submission.count({ where: { submittedByUserId: id } }),
+    prismaClient.reviewComment.count({ where: { userId: id } }),
+    prismaClient.universityRecord.count({ where: { createdByUserId: id } }),
+    prismaClient.submissionLog.count({ where: { actorUserId: id } })
+  ])
+  if (submissions + reviewComments + universityRecords + submissionLogs > 0) {
+    throw new ResponseError(
+      409,
+      'User tidak bisa dihapus karena masih punya data terkait (submission, review, atau data universitas). Nonaktifkan user ini lewat Edit → Status: Inactive sebagai gantinya.',
+      'USER_HAS_DEPENDENCIES'
+    )
+  }
+
+  // Fallback: kalau ada relasi RESTRICT lain yang terlewat, tetap tangani rapi.
+  try {
+    await prismaClient.user.delete({ where: { id } })
+  } catch (e) {
+    if (
+      e instanceof Prisma.PrismaClientKnownRequestError ||
+      e instanceof Prisma.PrismaClientUnknownRequestError
+    ) {
+      throw new ResponseError(
+        409,
+        'User tidak bisa dihapus karena masih punya data terkait. Nonaktifkan user ini lewat Edit → Status: Inactive sebagai gantinya.',
+        'USER_HAS_DEPENDENCIES'
+      )
+    }
+    throw e
+  }
   return { message: 'User berhasil dihapus' }
 }

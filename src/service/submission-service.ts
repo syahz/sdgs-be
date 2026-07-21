@@ -7,7 +7,6 @@ import { CreateSubmissionRequest, UpdateSubmissionRequest, ReviewRequest, Submis
 import { UserWithRelations } from '../type/user-request'
 import { calcSdgEstimate } from '../config/sdg-scoring'
 import { unwrapTheAnswers } from '../config/the-answer-key'
-import { MANDATORY_SDGS } from '../config/the-sdg-config'
 import { getSettingsService, assertDeletePin } from './settings-service'
 import { getSubmissionWindowFromConfig, isWithinWindow, isCutoffPassed, SubmissionWindow } from '../config/submission-window'
 import { sanitizeJson } from '../utils/sanitize'
@@ -192,8 +191,9 @@ export const submitSubmissionService = async (id: string, currentUser: UserWithR
     throw new ResponseError(400, 'Submission window belum/sudah ditutup', 'WINDOW_CLOSED')
   }
 
-  // Validate mandatory SDGs
-  if (MANDATORY_SDGS.includes(item.sdgId)) {
+  // Validate mandatory SDGs (dinamis dari settings)
+  const settings = await getSettingsService()
+  if (settings.mandatorySdgs.includes(item.sdgId)) {
     const theAnswers = item.theAnswers as Record<string, unknown>
     if (!theAnswers || Object.keys(theAnswers).length === 0) {
       throw new ResponseError(400, `SDG ${item.sdgId} wajib diisi`, 'MANDATORY_SDG_EMPTY')
@@ -248,27 +248,30 @@ export const reviewSubmissionService = async (id: string, request: ReviewRequest
     event = 'review_started'
   }
 
-  let updateData: any = {}
+  const updateData: any = {}
+
+  // Simpan skor bibliometrik yang diisi validator UNTUK SEMUA aksi (approve,
+  // request_revision, comment) — bukan cuma approve. Dulu skor hilang saat
+  // validator isi bibliometrik lalu minta revisi.
+  if (req.bibliometricScores && Object.keys(req.bibliometricScores).length > 0) {
+    const theAnswers = (item.theAnswers as Record<string, any>) || {}
+    for (const [code, score] of Object.entries(req.bibliometricScores)) {
+      const key = `THE_${code.replace(/\./g, '_')}`
+      theAnswers[key] = { score }
+    }
+    updateData.theAnswers = theAnswers
+    updateData.points = computePoints(item.sdgId, theAnswers, item.qsAnswers as any)
+  }
 
   switch (req.action) {
     case 'approve':
       toStatus = 'approved'
       event = 'approved'
-      // Apply bibliometric scores if provided
-      if (req.bibliometricScores && Object.keys(req.bibliometricScores).length > 0) {
-        const theAnswers = (item.theAnswers as Record<string, any>) || {}
-        for (const [code, score] of Object.entries(req.bibliometricScores)) {
-          const key = `THE_${code.replace(/\./g, '_')}`
-          theAnswers[key] = { score }
-        }
-        const points = computePoints(item.sdgId, theAnswers, item.qsAnswers as any)
-        updateData = { theAnswers, points }
-      }
       break
     case 'request_revision':
       toStatus = 'revision'
       event = 'revision_requested'
-      updateData = { revisionCount: { increment: 1 } }
+      updateData.revisionCount = { increment: 1 }
       break
     case 'reject':
       toStatus = 'rejected'

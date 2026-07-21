@@ -6,7 +6,9 @@ export class SettingsValidation {
     windowStartMonth: z.number().int().min(1).max(12).optional(),
     windowStartDay: z.number().int().min(1).max(31).optional(),
     windowEndMonth: z.number().int().min(1).max(12).optional(),
-    windowEndDay: z.number().int().min(1).max(31).optional()
+    windowEndDay: z.number().int().min(1).max(31).optional(),
+    // SDG wajib: array unik 1-17
+    mandatorySdgs: z.array(z.number().int().min(1).max(17)).max(17).optional()
   })
 
   static readonly DELETE_PIN = z.object({

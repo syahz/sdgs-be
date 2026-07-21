@@ -282,6 +282,22 @@ model UniversityRecordAudit {
   @@map("university_record_audits")
 }
 
+// ─────────────── ANNOUNCEMENT (pengumuman global, 1 aktif) ───────────────
+// Dikelola super_admin & validator. 1 baris logis (upsert). Tampil sbg banner
+// di halaman submission. Sengaja TANPA relasi FK ke User (simpan nama saja)
+// supaya tak menambah constraint yang memblok hapus user.
+
+model Announcement {
+  id            String   @id @default(uuid())
+  message       String   @db.Text
+  active        Boolean  @default(true)
+  updatedByName String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("announcements")
+}
+
 // ─────────────── SYSTEM SETTINGS (singleton, id=1) ───────────────
 
 model SystemSettings {
@@ -291,6 +307,9 @@ model SystemSettings {
   windowStartDay   Int
   windowEndMonth   Int
   windowEndDay     Int
+
+  // SDG wajib (dinamis, bisa berubah tiap tahun). Default THE Impact Rankings.
+  mandatorySdgs Int[] @default([1, 3, 4, 8, 17])
 
   // PIN 6-angka (bcrypt hash) — gerbang konfirmasi super admin sebelum hapus
   // data submission. null = belum diatur (hapus terblokir sampai PIN dibuat).

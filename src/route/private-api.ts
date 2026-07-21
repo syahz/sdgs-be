@@ -7,6 +7,7 @@ import universityRecordRouter from './details/university-record'
 import settingsRouter from './details/settings'
 import dashboardRouter from './details/dashboard'
 import configRouter from './details/config'
+import announcementRouter from './details/announcement'
 
 export const privateRouter = Router()
 
@@ -18,3 +19,4 @@ privateRouter.use('/api/university-records', universityRecordRouter)
 privateRouter.use('/api/settings', settingsRouter)
 privateRouter.use('/api/dashboard', dashboardRouter)
 privateRouter.use('/api/config', configRouter)
+privateRouter.use('/api/announcement', announcementRouter)
