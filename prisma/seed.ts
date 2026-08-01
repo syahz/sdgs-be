@@ -1,7 +1,33 @@
 import { PrismaClient, OrgUnitType } from '@prisma/client'
-import bcrypt from 'bcryptjs'
+import { generateAvatarInitials } from '../src/model/user-model'
 
 const prisma = new PrismaClient()
+
+/**
+ * Email super admin awal, dibaca dari env SEED_SUPER_ADMIN_EMAILS (pisah koma).
+ * Tidak ada default — seeder tidak boleh menciptakan akun istimewa yang alamatnya
+ * bisa ditebak siapa pun yang membaca repo ini.
+ *
+ * Akun dibuat TANPA password: autentikasi sepenuhnya lewat Keycloak (IAM UB),
+ * jadi email di sini wajib sama persis dengan email akun IAM yang bersangkutan.
+ *
+ * Contoh:
+ *   SEED_SUPER_ADMIN_EMAILS="budi@ub.ac.id,siti@ub.ac.id" npx prisma db seed
+ */
+const superAdminEmails = (process.env.SEED_SUPER_ADMIN_EMAILS ?? '')
+  .split(',')
+  .map((e) => e.trim().toLowerCase())
+  .filter(Boolean)
+
+/** "budi.santoso@ub.ac.id" → "Budi Santoso". Nama asli diperbaiki admin lewat UI. */
+function nameFromEmail(email: string): string {
+  return email
+    .split('@')[0]
+    .split(/[._-]+/)
+    .filter(Boolean)
+    .map((w) => w[0].toUpperCase() + w.slice(1))
+    .join(' ')
+}
 
 const faculties = [
   { name: 'Faculty of Law', abbreviation: 'FH' },
@@ -39,34 +65,28 @@ async function main() {
   }
   console.log(`Seeded ${faculties.length} org units`)
 
-  console.log('Seeding super_admin user...')
-  const hashedPassword = bcrypt.hashSync('admin123', 10)
-  await prisma.user.upsert({
-    where: { email: 'admin@ub.ac.id' },
-    update: {},
-    create: {
-      name: 'Admin Utama',
-      email: 'admin@ub.ac.id',
-      password: hashedPassword,
-      role: 'super_admin',
-      avatarInitials: 'AU',
-      status: 'active'
+  if (superAdminEmails.length === 0) {
+    console.log('SEED_SUPER_ADMIN_EMAILS kosong — seeding super_admin dilewati.')
+    console.log('  Set env-nya lalu jalankan ulang, contoh:')
+    console.log('  SEED_SUPER_ADMIN_EMAILS="nama@ub.ac.id" npx prisma db seed')
+  } else {
+    console.log(`Seeding ${superAdminEmails.length} super_admin (tanpa password, login via SSO)...`)
+    for (const email of superAdminEmails) {
+      const name = nameFromEmail(email)
+      await prisma.user.upsert({
+        where: { email },
+        update: { role: 'super_admin', status: 'active' },
+        create: {
+          name,
+          email,
+          role: 'super_admin',
+          avatarInitials: generateAvatarInitials(name),
+          status: 'active'
+        }
+      })
+      console.log(`  super_admin: ${email}`)
     }
-  })
-  await prisma.user.upsert({
-    where: { email: 'admin2@ub.ac.id' },
-    update: {},
-    create: {
-      name: 'Admin Kedua',
-      email: 'admin2@ub.ac.id',
-      password: hashedPassword,
-      role: 'super_admin',
-      avatarInitials: 'AK',
-      status: 'active'
-    }
-  })
-  console.log('Seeded super_admin: admin@ub.ac.id / admin123')
-  console.log('Seeded super_admin: admin2@ub.ac.id / admin123')
+  }
 
   console.log('Seeding default SystemSettings...')
   const existingSettings = await prisma.systemSettings.findFirst()

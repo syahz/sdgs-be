@@ -1,4 +1,3 @@
-import bcrypt from 'bcryptjs'
 import { Prisma } from '@prisma/client'
 import { prismaClient } from '../application/database'
 import { ResponseError } from '../error/response-error'
@@ -40,14 +39,14 @@ export const createUserService = async (request: CreateUserRequest): Promise<Use
     if (!orgUnit) throw new ResponseError(404, 'OrgUnit tidak ditemukan', 'NOT_FOUND')
   }
 
-  const hashedPassword = bcrypt.hashSync(req.password, 10)
   const avatarInitials = req.avatarInitials ?? generateAvatarInitials(req.name)
 
+  // Tanpa password: akun dibuat sebagai identitas lokal saja, autentikasi
+  // sepenuhnya lewat Keycloak. Email di sini harus sama dengan email di IAM UB.
   const user = await prismaClient.user.create({
     data: {
       name: req.name,
       email: req.email,
-      password: hashedPassword,
       role: req.role,
       orgUnitId: req.orgUnitId ?? null,
       avatarInitials,
@@ -70,7 +69,7 @@ export const updateUserService = async (
 
   const req = Validation.validate(UserValidation.UPDATE, request)
 
-  // Non-admin self-update: only name / email / password allowed.
+  // Non-admin self-update: hanya name / email.
   if (!isAdmin) {
     delete req.role
     delete req.orgUnitId
@@ -98,16 +97,8 @@ export const updateUserService = async (
   }
 
   const data: any = { ...req }
-  if (req.password) {
-    data.password = bcrypt.hashSync(req.password, 10)
-  }
   if (req.name && !req.avatarInitials) {
     data.avatarInitials = generateAvatarInitials(req.name)
-  }
-  // Unlock manual super admin: buka kunci sekaligus reset counter brute-force.
-  if (req.isLocked === false) {
-    data.failedLogins = 0
-    data.lockedUntil = null
   }
 
   const updated = await prismaClient.user.update({ where: { id }, data })

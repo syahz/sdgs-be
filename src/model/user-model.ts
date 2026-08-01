@@ -3,7 +3,6 @@ import { User } from '@prisma/client'
 export interface CreateUserRequest {
   name: string
   email: string
-  password: string
   role: 'super_admin' | 'validator' | 'unit_admin' | 'pimpinan'
   orgUnitId?: string | null
   avatarInitials?: string
@@ -13,7 +12,6 @@ export interface CreateUserRequest {
 export interface UpdateUserRequest {
   name?: string
   email?: string
-  password?: string
   role?: 'super_admin' | 'validator' | 'unit_admin' | 'pimpinan'
   orgUnitId?: string | null
   avatarInitials?: string
@@ -30,7 +28,6 @@ export type UserResponse = {
   avatarInitials: string
   status: string
   isLocked: boolean
-  lockedUntil: string | null
 }
 
 export function toUserResponse(user: User): UserResponse {
@@ -42,8 +39,7 @@ export function toUserResponse(user: User): UserResponse {
     orgUnitId: user.orgUnitId,
     avatarInitials: user.avatarInitials,
     status: user.status,
-    isLocked: user.isLocked,
-    lockedUntil: user.lockedUntil ? user.lockedUntil.toISOString() : null
+    isLocked: user.isLocked
   }
 }
 

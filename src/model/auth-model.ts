@@ -1,10 +1,5 @@
 import { User, OrgUnit } from '@prisma/client'
 
-export interface LoginRequest {
-  email: string
-  password: string
-}
-
 export interface AuthResponse {
   accessToken: string
   user: UserPublic

@@ -103,7 +103,6 @@ model User {
   id             String     @id @default(uuid())
   name           String
   email          String     @unique
-  password       String? // null = user Google-only (login OAuth saja)
   role           UserRole
   avatarInitials String
   status         UserStatus @default(active)
@@ -112,10 +111,10 @@ model User {
   orgUnitId String?
   orgUnit   OrgUnit? @relation(fields: [orgUnitId], references: [id])
 
-  // proteksi brute-force (pola BE/)
-  failedLogins Int       @default(0)
-  isLocked     Boolean   @default(false)
-  lockedUntil  DateTime? // auto-unlock setelah waktu ini; null = lock manual (dibuka super admin)
+  // Blokir manual oleh super admin. Berlaku untuk SSO (satu-satunya jalur login).
+  // ponytail: tidak ada failedLogins/lockedUntil — tanpa password lokal tidak ada
+  // brute-force kredensial yang perlu dihitung; kunci/buka murni keputusan admin.
+  isLocked Boolean @default(false)
 
   submissions       Submission[]       @relation("SubmittedBy")
   reviewComments    ReviewComment[]

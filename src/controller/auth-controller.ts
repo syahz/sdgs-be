@@ -1,6 +1,5 @@
 import { Request, Response, NextFunction } from 'express'
 import {
-  loginService,
   loginKeycloakService,
   refreshService,
   recordActivityService,
@@ -27,21 +26,9 @@ import {
 
 const LOGIN_PATH = () => `${FRONTEND_URL ?? ''}/login`
 
-export const loginController = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const ip = req.ip ?? req.socket.remoteAddress ?? null
-    const ua = req.headers['user-agent'] ?? null
-    const result = await loginService(req.body, ip, ua, res)
-    res.status(200).json({ data: result })
-  } catch (e) {
-    next(e)
-  }
-}
-
 // ── Keycloak (IAM Universitas) — OIDC Authorization Code + PKCE ──────────
-// Semua endpoint diakses lewat origin FE (proxy /api → BE) supaya cookie
-// refresh_token jatuh di origin FE. redirect_uri yang di-whitelist di Keycloak
-// = <URL_FE>/api/auth/keycloak/callback.
+// Satu-satunya jalur login. redirect_uri yang di-whitelist di Keycloak
+// = KEYCLOAK_REDIRECT_URI (origin BE), lalu redirect balik ke FE.
 
 export const keycloakStartController = (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -101,6 +88,9 @@ export const keycloakCallbackController = async (req: Request, res: Response, ne
     if (e instanceof ResponseError && e.code === 'ACCOUNT_INACTIVE') {
       return res.redirect(`${login}?error=account_inactive`)
     }
+    if (e instanceof ResponseError && e.code === 'ACCOUNT_LOCKED') {
+      return res.redirect(`${login}?error=account_locked`)
+    }
     // Galat tak terduga (token exchange / jaringan) — jangan render JSON di
     // navigasi top-level; arahkan balik ke login dengan error generik.
     return res.redirect(`${login}?error=oauth`)
@@ -142,9 +132,7 @@ export const logoutController = async (req: Request, res: Response, next: NextFu
 
 export const getMeController = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const user = (req as UserRequest).user
-    const { password: _, ...safeUser } = user as any
-    res.status(200).json({ data: safeUser })
+    res.status(200).json({ data: (req as UserRequest).user })
   } catch (e) {
     next(e)
   }

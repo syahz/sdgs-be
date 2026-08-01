@@ -1,6 +1,13 @@
 import { config } from 'dotenv'
+import path from 'path'
 
-config({ path: '.env' })
+// Path absolut relatif ke file ini (src/config atau dist/config → root BE),
+// bukan process.cwd() — supaya restart pm2/systemd dengan cwd berbeda tetap baca .env.
+config({ path: path.resolve(__dirname, '../../.env') })
+
+if (process.env.NODE_ENV === 'production' && !process.env.FRONTEND_URL) {
+  throw new Error('FRONTEND_URL kosong di production — .env tidak terbaca. CORS akan menolak semua request.')
+}
 
 export const {
   PORT,
