@@ -13,7 +13,7 @@ export const web = express()
 web.set('trust proxy', 1)
 
 const corsOptions = {
-  origin: FRONTEND_URL || 'http://localhost:3000',
+  origin: FRONTEND_URL || 'http://localhost:3010',
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
   credentials: true
 }
