@@ -8,6 +8,8 @@ import {
   createConfigDraftController,
   activateConfigVersionController,
   deleteConfigDraftController,
+  getConfigYearStatusController,
+  getConfigVersionDetailController,
 } from '../../controller/config-controller'
 import { authRequired, requireRole } from '../../middleware/auth-middleware'
 
@@ -29,6 +31,8 @@ router.get('/sdg-meta', getSdgMetaController)
 const configBody = json({ limit: '2mb' })
 
 router.get('/versions', requireRole('super_admin'), listConfigVersionsController)
+router.get('/years', requireRole('super_admin'), getConfigYearStatusController)
+router.get('/versions/:id', requireRole('super_admin'), getConfigVersionDetailController)
 router.get('/template', requireRole('super_admin'), getConfigTemplateController)
 router.post('/versions', requireRole('super_admin'), configBody, createConfigDraftController)
 router.post('/versions/:id/activate', requireRole('super_admin'), activateConfigVersionController)

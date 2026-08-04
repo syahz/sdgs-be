@@ -38,6 +38,9 @@ export interface VersionSummary {
   activatedByName: string | null
   activatedAt: Date | null
   indicatorCount: number
+  /** Jumlah data tersimpan di tahun itu. > 0 = kerangkanya terkunci. */
+  dataCount: number
+  locked: boolean
 }
 
 function ringkas(row: {
@@ -58,12 +61,88 @@ function ringkas(row: {
   return { ...row, payload: undefined, indicatorCount: n } as unknown as VersionSummary
 }
 
-/** Daftar versi, terbaru dulu. */
+/** Daftar versi, terbaru dulu, beserta status kunci tiap tahun. */
 export const listConfigVersionsService = async (): Promise<VersionSummary[]> => {
   const rows = await prismaClient.sdgConfigVersion.findMany({
     orderBy: [{ year: 'desc' }, { createdAt: 'desc' }],
   })
-  return rows.map(ringkas)
+  const tahun = [...new Set(rows.map((r) => r.year))]
+  const hitung = new Map<number, number>()
+  await Promise.all(tahun.map(async (y) => hitung.set(y, await tahunSudahBerdata(y))))
+  return rows.map((r) => {
+    const n = hitung.get(r.year) ?? 0
+    return { ...ringkas(r), dataCount: n, locked: n > 0 }
+  })
+}
+
+/**
+ * Status tiap tahun untuk panduan admin: mana yang masih boleh diubah
+ * kerangkanya, mana yang sudah terkunci karena ada data.
+ *
+ * Tanpa ini admin harus menebak — dan baru tahu tahunnya terkunci setelah
+ * mengunggah berkas 180 KB dan ditolak.
+ */
+export const getConfigYearStatusService = async () => {
+  const now = new Date().getFullYear()
+  const rows = await prismaClient.sdgConfigVersion.findMany({
+    select: { year: true, status: true },
+  })
+  const tahunConfig = new Set(rows.map((r) => r.year))
+  // Rentang yang masuk akal: dari config paling awal sampai 2 tahun ke depan.
+  const mulai = Math.min(now, ...(tahunConfig.size ? [...tahunConfig] : [now]))
+  const daftar: number[] = []
+  for (let y = mulai; y <= now + 2; y++) daftar.push(y)
+
+  return Promise.all(
+    daftar.map(async (year) => {
+      const dataCount = await tahunSudahBerdata(year)
+      return {
+        year,
+        dataCount,
+        locked: dataCount > 0,
+        hasActive: rows.some((r) => r.year === year && r.status === 'active'),
+        hasDraft: rows.some((r) => r.year === year && r.status === 'draft'),
+      }
+    })
+  )
+}
+
+/**
+ * Buka kembali sebuah versi: hitung ulang validasi dan diff-nya.
+ *
+ * Draft yang diunggah lalu halamannya ditutup sebelumnya jadi tidak terjangkau —
+ * tersimpan di database tapi tak ada cara melihat atau menghapusnya dari UI.
+ */
+export const getConfigVersionDetailService = async (id: string): Promise<DraftResult> => {
+  const row = await prismaClient.sdgConfigVersion.findUnique({ where: { id } })
+  if (!row) throw new ResponseError(404, 'Versi config tidak ditemukan', 'NOT_FOUND')
+
+  const payload = row.payload as unknown as SdgConfigPayload
+  const { errors, warnings } = lintConfig(payload)
+
+  const dasar = resolveConfig(payload.year)
+  const basePayload: SdgConfigPayload | null =
+    Object.keys(dasar.sdgs).length > 0
+      ? {
+          schemaVersion: 1,
+          year: dasar.year,
+          sdgs: dasar.sdgs,
+          quantFormulas: dasar.quantFormulas,
+          qualQuestions: dasar.qualQuestions,
+          groupTitles: dasar.groupTitles,
+        }
+      : null
+  const diff = buildConfigDiff(basePayload, payload)
+
+  return {
+    id: row.id,
+    year: row.year,
+    checksum: row.checksum,
+    issues: { errors, warnings },
+    diff,
+    affectsScoring: diffAffectsScoring(diff),
+    indicatorCount: diff.counts.indicatorsAfter,
+  }
 }
 
 /**

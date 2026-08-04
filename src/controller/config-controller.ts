@@ -9,6 +9,8 @@ import {
   createConfigDraftService,
   activateConfigVersionService,
   deleteConfigDraftService,
+  getConfigVersionDetailService,
+  getConfigYearStatusService,
 } from '../service/config-version-service'
 
 /**
@@ -106,6 +108,23 @@ export const deleteConfigDraftController = async (req: Request, res: Response, n
   try {
     const id = typeof req.params.id === 'string' ? req.params.id : req.params.id[0]
     res.status(200).json({ data: await deleteConfigDraftService(id) })
+  } catch (e) {
+    next(e)
+  }
+}
+
+export const getConfigYearStatusController = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    res.status(200).json({ data: await getConfigYearStatusService() })
+  } catch (e) {
+    next(e)
+  }
+}
+
+export const getConfigVersionDetailController = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const id = typeof req.params.id === 'string' ? req.params.id : req.params.id[0]
+    res.status(200).json({ data: await getConfigVersionDetailService(id) })
   } catch (e) {
     next(e)
   }
