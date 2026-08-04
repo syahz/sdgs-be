@@ -5,6 +5,7 @@ import {
   RecordSnapshot,
   toAuditLogResponse
 } from '../model/audit-log-model'
+import { logger } from '../utils/logger'
 
 // Konteks pelaku + forensik yang dibawa dari controller per request.
 export interface AuditContext {
@@ -52,7 +53,12 @@ export async function recordAudit(params: RecordAuditParams): Promise<void> {
       }
     })
   } catch (e) {
-    console.error('[audit] gagal menulis university_record_audit:', e)
+    // console.error tidak pernah mendarat di logs/error/ — kegagalan audit
+    // justru hal yang paling perlu terekam.
+    logger.error('Gagal menulis university_record_audit', {
+      action: 'AUDIT_WRITE_FAILED',
+      error: String(e)
+    })
   }
 }
 

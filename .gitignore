@@ -3,4 +3,4 @@ dist/
 .env
 *.log
 logs/
-API-CONTRACT.md
+API-CONTRACT.mdbackup/

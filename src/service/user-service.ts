@@ -1,3 +1,4 @@
+import bcrypt from 'bcryptjs'
 import { Prisma } from '@prisma/client'
 import { prismaClient } from '../application/database'
 import { ResponseError } from '../error/response-error'
@@ -41,12 +42,13 @@ export const createUserService = async (request: CreateUserRequest): Promise<Use
 
   const avatarInitials = req.avatarInitials ?? generateAvatarInitials(req.name)
 
-  // Tanpa password: akun dibuat sebagai identitas lokal saja, autentikasi
-  // sepenuhnya lewat Keycloak. Email di sini harus sama dengan email di IAM UB.
+  // Password opsional. Kosong = akun SSO-only: user masuk lewat Akun UB, dan
+  // email di sini harus sama persis dengan email di IAM UB.
   const user = await prismaClient.user.create({
     data: {
       name: req.name,
       email: req.email,
+      password: req.password ? bcrypt.hashSync(req.password, 10) : null,
       role: req.role,
       orgUnitId: req.orgUnitId ?? null,
       avatarInitials,
@@ -69,7 +71,7 @@ export const updateUserService = async (
 
   const req = Validation.validate(UserValidation.UPDATE, request)
 
-  // Non-admin self-update: hanya name / email.
+  // Non-admin self-update: hanya name / email / password.
   if (!isAdmin) {
     delete req.role
     delete req.orgUnitId
@@ -97,8 +99,30 @@ export const updateUserService = async (
   }
 
   const data: any = { ...req }
+  delete data.currentPassword // field verifikasi, bukan kolom DB
+
+  if (req.password) {
+    // User mengganti password sendiri wajib membuktikan tahu password lama.
+    // Tanpa ini, sesi yang dibajak bisa mengunci pemilik akun keluar.
+    // Super admin dikecualikan — itu jalur reset password oleh admin.
+    if (!isAdmin) {
+      if (!user.password) {
+        throw new ResponseError(400, 'Akun ini belum punya password. Atur lewat Super Admin.', 'SSO_ONLY')
+      }
+      if (!req.currentPassword || !bcrypt.compareSync(req.currentPassword, user.password)) {
+        throw new ResponseError(401, 'Password saat ini salah', 'INVALID_CURRENT_PASSWORD')
+      }
+    }
+    data.password = bcrypt.hashSync(req.password, 10)
+  }
+
   if (req.name && !req.avatarInitials) {
     data.avatarInitials = generateAvatarInitials(req.name)
+  }
+  // Unlock manual super admin: buka kunci sekaligus reset counter brute-force.
+  if (req.isLocked === false) {
+    data.failedLogins = 0
+    data.lockedUntil = null
   }
 
   const updated = await prismaClient.user.update({ where: { id }, data })

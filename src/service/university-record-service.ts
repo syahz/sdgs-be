@@ -11,6 +11,7 @@ import {
 } from '../model/university-record-model'
 import { UserWithRelations } from '../type/user-request'
 import { calcSdgEstimate } from '../config/sdg-scoring'
+import { scoringContext } from '../config/config-registry'
 import { unwrapTheAnswers } from '../config/the-answer-key'
 import { sanitizeJson } from '../utils/sanitize'
 import { recordAudit, AuditContext } from './audit-log-service'
@@ -24,9 +25,12 @@ const recordInclude = {
   createdBy: { select: { id: true, name: true } }
 }
 
-function computePoints(sdgId: number, theAnswers: Record<string, unknown>): number {
+/** `year` WAJIB — record 2024 harus dinilai dengan aturan 2024, bukan aturan hari ini. */
+function computePoints(year: number, sdgId: number, theAnswers: Record<string, unknown>): number {
+  const ctx = scoringContext(year, sdgId)
+  if (!ctx) return 0
   const decoded = unwrapTheAnswers(theAnswers as Record<string, any>)
-  return calcSdgEstimate(sdgId, decoded as any)
+  return calcSdgEstimate(ctx, decoded as any)
 }
 
 export const getUniversityRecordsService = async (filters: { year?: string; sdgId?: string; status?: string }) => {
@@ -63,7 +67,7 @@ export const createUniversityRecordService = async (
 
   const cleanThe = sanitizeJson(req.theAnswers ?? {})
   const cleanQs = sanitizeJson(req.qsAnswers ?? {})
-  const points = computePoints(req.sdgId, cleanThe as any)
+  const points = computePoints(req.year, req.sdgId, cleanThe as any)
 
   const item = await prismaClient.universityRecord.create({
     data: {
@@ -105,7 +109,7 @@ export const updateUniversityRecordService = async (
 
   const newSdgId = req.sdgId ?? item.sdgId
   const newTheAnswers = sanitizeJson(req.theAnswers ?? (item.theAnswers as any))
-  const points = computePoints(newSdgId, newTheAnswers)
+  const points = computePoints(req.year ?? item.year, newSdgId, newTheAnswers)
 
   const before = scalarsOf(item)
 

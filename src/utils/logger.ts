@@ -10,9 +10,19 @@ if (!existsSync(logDir)) {
   mkdirSync(logDir, { recursive: true })
 }
 
-const logFormat = winston.format.printf(
-  ({ timestamp, level, message }) => `${timestamp} ${level}: ${message}`
-)
+/**
+ * Format baris log. Versi lama hanya membaca `${message}` sehingga metadata
+ * yang dikirim sebagai argumen kedua (`logger.error('msg', { ... })`) HILANG
+ * tanpa jejak — temuan saat menindaklanjuti MEDIUM-1 CSIRT DTI.
+ * Sekarang meta ikut diserialisasi, dan `stack` ditulis di baris terpisah.
+ */
+const logFormat = winston.format.printf((info) => {
+  const { timestamp, level, message, stack, ...meta } = info as Record<string, unknown>
+  const text = typeof message === 'string' ? message : JSON.stringify(message)
+  const rest = Object.keys(meta).length > 0 ? ` ${JSON.stringify(meta)}` : ''
+  const trace = typeof stack === 'string' ? `\n${stack}` : ''
+  return `${timestamp} ${level}: ${text}${rest}${trace}`
+})
 
 export const logger = winston.createLogger({
   format: winston.format.combine(

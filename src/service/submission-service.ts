@@ -6,10 +6,12 @@ import { SubmissionValidation } from '../validation/submission-validation'
 import { CreateSubmissionRequest, UpdateSubmissionRequest, ReviewRequest, SubmissionWithRelations, toSubmissionResponse } from '../model/submission-model'
 import { UserWithRelations } from '../type/user-request'
 import { calcSdgEstimate } from '../config/sdg-scoring'
+import { scoringContext } from '../config/config-registry'
 import { unwrapTheAnswers } from '../config/the-answer-key'
 import { getSettingsService, assertDeletePin } from './settings-service'
 import { getSubmissionWindowFromConfig, isWithinWindow, isCutoffPassed, SubmissionWindow } from '../config/submission-window'
-import { sanitizeJson } from '../utils/sanitize'
+import { sanitizeJson, sanitizeString } from '../utils/sanitize'
+import { buildReviewerAliases, maskComment, maskLog, shouldMaskReviewers } from '../model/reviewer-alias'
 import { recordAudit, AuditContext } from './audit-log-service'
 import { buildChanges, buildSnapshot } from '../model/audit-log-model'
 
@@ -43,9 +45,16 @@ export async function ensureCutoffAutoSubmit(window?: SubmissionWindow): Promise
   }
 }
 
-function computePoints(sdgId: number, theAnswers: Record<string, unknown>, qsAnswers: Record<string, unknown>): number {
+/**
+ * `year` WAJIB: skor harus dihitung dengan config tahun submission itu, bukan
+ * config tahun berjalan. Tanpa ini, mengganti kerangka THE membuat skor data
+ * lama berubah surut.
+ */
+function computePoints(year: number, sdgId: number, theAnswers: Record<string, unknown>, qsAnswers: Record<string, unknown>): number {
+  const ctx = scoringContext(year, sdgId)
+  if (!ctx) return 0
   const decoded = unwrapTheAnswers(theAnswers as Record<string, any>)
-  return calcSdgEstimate(sdgId, decoded as any)
+  return calcSdgEstimate(ctx, decoded as any)
 }
 
 const submissionInclude = {
@@ -91,7 +100,9 @@ export const getSubmissionByIdService = async (
 ) => {
   const include: any = { ...submissionInclude }
   if (includeComments) include.reviewComments = { include: { user: { select: { id: true, name: true, role: true } } }, orderBy: { createdAt: 'asc' } }
-  if (includeLogs) include.logs = { include: { actor: { select: { id: true, name: true } } }, orderBy: { createdAt: 'asc' } }
+  // `role` wajib ikut di-select — dipakai buildReviewerAliases untuk membedakan
+  // aktor peninjau dari aktor unit itu sendiri.
+  if (includeLogs) include.logs = { include: { actor: { select: { id: true, name: true, role: true } } }, orderBy: { createdAt: 'asc' } }
 
   const item = await prismaClient.submission.findUnique({ where: { id }, include })
   if (!item) throw new ResponseError(404, 'Submission tidak ditemukan', 'NOT_FOUND')
@@ -99,6 +110,16 @@ export const getSubmissionByIdService = async (
   if (currentUser.role === 'unit_admin' && item.orgUnitId !== currentUser.orgUnitId) {
     throw new ResponseError(403, 'Akses ditolak', 'FORBIDDEN')
   }
+
+  // Masking dilakukan SEBELUM serialisasi respons, memakai peta alias yang sama
+  // untuk komentar dan log agar "Validator 2" konsisten di kedua daftar.
+  if (shouldMaskReviewers(currentUser.role)) {
+    const raw = item as any
+    const aliases = buildReviewerAliases(raw.reviewComments ?? [], raw.logs ?? [])
+    if (raw.reviewComments) raw.reviewComments = raw.reviewComments.map((c: any) => maskComment(c, aliases))
+    if (raw.logs) raw.logs = raw.logs.map((l: any) => maskLog(l, aliases))
+  }
+
   return toSubmissionResponse(item as unknown as SubmissionWithRelations)
 }
 
@@ -117,7 +138,7 @@ export const createSubmissionService = async (request: CreateSubmissionRequest, 
 
   const cleanThe = sanitizeJson(req.theAnswers ?? {})
   const cleanQs = sanitizeJson(req.qsAnswers ?? {})
-  const points = computePoints(req.sdgId, cleanThe as any, cleanQs as any)
+  const points = computePoints(req.year, req.sdgId, cleanThe as any, cleanQs as any)
 
   const item = await prismaClient.submission.create({
     data: {
@@ -156,7 +177,7 @@ export const updateSubmissionService = async (id: string, request: UpdateSubmiss
 
   const newTheAnswers = sanitizeJson(req.theAnswers ?? (item.theAnswers as any))
   const newQsAnswers = sanitizeJson(req.qsAnswers ?? (item.qsAnswers as any))
-  const points = computePoints(item.sdgId, newTheAnswers, newQsAnswers)
+  const points = computePoints(item.year, item.sdgId, newTheAnswers, newQsAnswers)
 
   const updated = await prismaClient.submission.update({
     where: { id },
@@ -260,7 +281,7 @@ export const reviewSubmissionService = async (id: string, request: ReviewRequest
       theAnswers[key] = { score }
     }
     updateData.theAnswers = theAnswers
-    updateData.points = computePoints(item.sdgId, theAnswers, item.qsAnswers as any)
+    updateData.points = computePoints(item.year, item.sdgId, theAnswers, item.qsAnswers as any)
   }
 
   switch (req.action) {
@@ -289,13 +310,17 @@ export const reviewSubmissionService = async (id: string, request: ReviewRequest
     include: submissionInclude
   })
 
+  // Catatan validator = teks bebas yang dirender ke admin fakultas — sanitasi
+  // sama seperti jawaban submission (sebelumnya jalur ini terlewat).
+  const cleanComment = req.comment ? sanitizeString(req.comment) : req.comment
+
   // Create review comment
   if (req.comment || req.action !== 'approve') {
     await prismaClient.reviewComment.create({
       data: {
         submissionId: id,
         userId: currentUser.id,
-        comment: req.comment ?? '',
+        comment: cleanComment ?? '',
         action: req.action as any,
         questionId: req.questionId ?? null
       }
@@ -310,7 +335,7 @@ export const reviewSubmissionService = async (id: string, request: ReviewRequest
       fromStatus,
       toStatus,
       actorUserId: currentUser.id,
-      note: req.comment
+      note: cleanComment
     }
   })
 
@@ -325,11 +350,20 @@ export const getSubmissionLogsService = async (id: string, currentUser: UserWith
     throw new ResponseError(403, 'Akses ditolak', 'FORBIDDEN')
   }
 
-  return prismaClient.submissionLog.findMany({
+  const logs = await prismaClient.submissionLog.findMany({
     where: { submissionId: id },
-    include: { actor: { select: { id: true, name: true } } },
+    include: { actor: { select: { id: true, name: true, role: true } } },
     orderBy: { createdAt: 'asc' }
   })
+  if (!shouldMaskReviewers(currentUser.role)) return logs
+
+  // Komentar ikut dibaca agar penomoran identik dengan endpoint /comments.
+  const comments = await prismaClient.reviewComment.findMany({
+    where: { submissionId: id },
+    select: { userId: true, createdAt: true, user: { select: { id: true, name: true, role: true } } }
+  })
+  const aliases = buildReviewerAliases(comments, logs)
+  return logs.map((l) => maskLog(l, aliases))
 }
 
 export const getSubmissionCommentsService = async (id: string, currentUser: UserWithRelations) => {
@@ -340,11 +374,19 @@ export const getSubmissionCommentsService = async (id: string, currentUser: User
     throw new ResponseError(403, 'Akses ditolak', 'FORBIDDEN')
   }
 
-  return prismaClient.reviewComment.findMany({
+  const comments = await prismaClient.reviewComment.findMany({
     where: { submissionId: id },
     include: { user: { select: { id: true, name: true, role: true } } },
     orderBy: { createdAt: 'asc' }
   })
+  if (!shouldMaskReviewers(currentUser.role)) return comments
+
+  const logs = await prismaClient.submissionLog.findMany({
+    where: { submissionId: id },
+    select: { actorUserId: true, createdAt: true, note: true, actor: { select: { id: true, name: true, role: true } } }
+  })
+  const aliases = buildReviewerAliases(comments, logs)
+  return comments.map((c) => maskComment(c, aliases))
 }
 
 export const addCommentService = async (
@@ -359,7 +401,7 @@ export const addCommentService = async (
     data: {
       submissionId,
       userId: currentUser.id,
-      comment: data.comment,
+      comment: sanitizeString(data.comment ?? ''),
       action: (data.action as any) ?? 'comment',
       questionId: data.questionId ?? null
     },
@@ -396,7 +438,7 @@ export const autoApproveYearEndService = async (year: number): Promise<{ approve
   })
 
   for (const item of pending) {
-    const points = computePoints(item.sdgId, item.theAnswers as any, item.qsAnswers as any)
+    const points = computePoints(item.year, item.sdgId, item.theAnswers as any, item.qsAnswers as any)
     const fromStatus = item.status
 
     await prismaClient.$transaction([

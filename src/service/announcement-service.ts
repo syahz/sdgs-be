@@ -1,13 +1,21 @@
 import { prismaClient } from '../application/database'
 import { Validation } from '../validation/Validation'
+import { sanitizeString } from '../utils/sanitize'
 import { AnnouncementValidation } from '../validation/announcement-validation'
 import { UpsertAnnouncementRequest, AnnouncementResponse, toAnnouncementResponse } from '../model/announcement-model'
 
-/** Pengumuman aktif untuk banner (null jika tak ada / dimatikan). */
+/**
+ * Pengumuman aktif untuk banner (null jika tak ada / dimatikan).
+ *
+ * `updatedByName` sengaja TIDAK dikirim di sini: endpoint ini terbuka untuk
+ * semua role termasuk unit_admin, dan pengumuman biasanya ditulis validator —
+ * jalur bocor identitas peninjau yang sama dengan catatan revisi. Editor
+ * (super_admin/validator) tetap melihatnya lewat GET /announcement/edit.
+ */
 export const getActiveAnnouncementService = async (): Promise<AnnouncementResponse | null> => {
   const a = await prismaClient.announcement.findFirst({ orderBy: { updatedAt: 'desc' } })
   if (!a || !a.active) return null
-  return toAnnouncementResponse(a)
+  return { ...toAnnouncementResponse(a), updatedByName: null }
 }
 
 /** Untuk editor (super_admin/validator) — kembalikan baris apa pun statusnya. */
@@ -24,13 +32,16 @@ export const upsertAnnouncementService = async (
   const req = Validation.validate(AnnouncementValidation.UPSERT, request)
   const existing = await prismaClient.announcement.findFirst({ orderBy: { updatedAt: 'desc' } })
 
+  // Pengumuman tampil di dashboard semua role — sanitasi seperti teks bebas lain.
+  const message = sanitizeString(req.message)
+
   const a = existing
     ? await prismaClient.announcement.update({
         where: { id: existing.id },
-        data: { message: req.message, active: req.active, updatedByName: actorName }
+        data: { message, active: req.active, updatedByName: actorName }
       })
     : await prismaClient.announcement.create({
-        data: { message: req.message, active: req.active, updatedByName: actorName }
+        data: { message, active: req.active, updatedByName: actorName }
       })
 
   return toAnnouncementResponse(a)

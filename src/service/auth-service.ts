@@ -1,16 +1,23 @@
 import { Response } from 'express'
+import bcrypt from 'bcryptjs'
 import { randomUUID } from 'crypto'
 import { prismaClient } from '../application/database'
 import { ResponseError } from '../error/response-error'
+import { Validation } from '../validation/Validation'
+import { AuthValidation } from '../validation/auth-validation'
 import { signAccessToken } from '../utils/jwt'
 import { createSessionToken, hashToken } from '../utils/token'
-import { AuthResponse, toUserPublic } from '../model/auth-model'
+import { LoginRequest, AuthResponse, toUserPublic } from '../model/auth-model'
 import { REFRESH_TOKEN_EXPIRES_SECONDS, IDLE_TIMEOUT_SECONDS, COOKIE_DOMAIN, NODE_ENV } from '../config'
 import { logger } from '../utils/logger'
 import { auditAuth } from '../utils/audit-logger'
 
 const REFRESH_EXPIRES = Number(REFRESH_TOKEN_EXPIRES_SECONDS ?? 60 * 60 * 24 * 30)
 const MAX_SESSIONS = 5
+/** Brute-force: gagal login berturut sebanyak ini → akun dikunci. */
+const LOCK_THRESHOLD = 5
+/** Durasi kunci otomatis (menit). Setelah lewat, login berikut auto-unlock. */
+const LOCK_DURATION_MINUTES = 15
 /** Idle window — sesi mati bila tak ada aktivitas user selama durasi ini (default 30 menit). */
 const IDLE_TIMEOUT = Number(IDLE_TIMEOUT_SECONDS ?? 1800)
 
@@ -84,10 +91,110 @@ async function createSessionForUser(user: any, ipAddress: string | null, userAge
 }
 
 /**
- * Login via Keycloak (IAM Universitas) — SATU-SATUNYA jalur login sistem ini.
- * Identitas (email) sudah dibuktikan Keycloak; di sini hanya cek apakah email
- * terdaftar, aktif, dan tidak diblokir, lalu terbitkan sesi milik sistem
- * (cookie refresh_token + access token). Tidak memakai sesi Keycloak sama sekali.
+ * Gate kunci akun — dipakai jalur password MAUPUN SSO.
+ * Auto-unlock bila `lockedUntil` sudah lewat; kalau masih terkunci, lempar 403.
+ * Memutasi `user` di tempat supaya pemanggil melihat status terbaru.
+ *
+ * Wajib ada di jalur SSO juga: tanpa ini tombol "Kunci akun" di panel super admin
+ * hanya memblokir login password, sementara pintu SSO tetap terbuka.
+ */
+async function enforceLockGate(
+  user: { id: string; email: string; isLocked: boolean; failedLogins: number; lockedUntil: Date | null },
+  ipAddress: string | null,
+  userAgent: string | null
+): Promise<void> {
+  if (!user.isLocked) return
+
+  // lockedUntil null = lock manual, hanya super admin yang bisa buka.
+  if (user.lockedUntil && user.lockedUntil <= new Date()) {
+    await prismaClient.user.update({
+      where: { id: user.id },
+      data: { isLocked: false, failedLogins: 0, lockedUntil: null }
+    })
+    auditAuth({ action: 'LOGIN_FAILED', email: user.email, userId: user.id, ip: ipAddress, userAgent, detail: 'auto_unlocked' })
+    user.isLocked = false
+    user.failedLogins = 0
+    user.lockedUntil = null
+    return
+  }
+
+  const detail = user.lockedUntil
+    ? `account_locked (until ${user.lockedUntil.toISOString()})`
+    : 'account_locked (manual)'
+  auditAuth({ action: 'LOGIN_FAILED', email: user.email, userId: user.id, ip: ipAddress, userAgent, detail })
+
+  const minsLeft = user.lockedUntil
+    ? Math.max(1, Math.ceil((user.lockedUntil.getTime() - Date.now()) / 60000))
+    : null
+  throw new ResponseError(
+    403,
+    minsLeft
+      ? `Akun terkunci. Coba lagi dalam ${minsLeft} menit atau hubungi Super Admin.`
+      : 'Akun terkunci. Hubungi Super Admin untuk membuka.',
+    'ACCOUNT_LOCKED'
+  )
+}
+
+/**
+ * Login manual email + password. Berdampingan dengan SSO: akun yang belum pernah
+ * diberi password lokal (`password` null) ditolak di sini dan harus lewat SSO.
+ */
+export const loginService = async (request: LoginRequest, ipAddress: string | null, userAgent: string | null, res: Response): Promise<AuthResponse> => {
+  const req = Validation.validate(AuthValidation.LOGIN, request)
+
+  const user = await prismaClient.user.findUnique({
+    where: { email: req.email },
+    include: { orgUnit: true }
+  })
+  if (!user) {
+    auditAuth({ action: 'LOGIN_FAILED', email: req.email, ip: ipAddress, userAgent, detail: 'unknown_email' })
+    throw new ResponseError(401, 'Invalid email or password', 'INVALID_CREDENTIALS')
+  }
+  await enforceLockGate(user, ipAddress, userAgent)
+
+  if (!user.password) {
+    auditAuth({ action: 'LOGIN_FAILED', email: user.email, userId: user.id, ip: ipAddress, userAgent, detail: 'sso_only' })
+    throw new ResponseError(401, 'Akun ini belum punya password. Masuk lewat Akun UB.', 'SSO_ONLY')
+  }
+
+  const match = bcrypt.compareSync(req.password, user.password)
+  if (!match) {
+    const newFailed = user.failedLogins + 1
+    const willLock = newFailed >= LOCK_THRESHOLD
+    await prismaClient.user.update({
+      where: { id: user.id },
+      data: {
+        failedLogins: newFailed,
+        isLocked: willLock,
+        lockedUntil: willLock ? new Date(Date.now() + LOCK_DURATION_MINUTES * 60000) : null
+      }
+    })
+    auditAuth({ action: 'LOGIN_FAILED', email: user.email, userId: user.id, ip: ipAddress, userAgent, detail: `wrong_password (attempt ${newFailed}${willLock ? ', locked' : ''})` })
+    throw new ResponseError(401, 'Invalid email or password', 'INVALID_CREDENTIALS')
+  }
+
+  if (user.failedLogins > 0) {
+    await prismaClient.user.update({ where: { id: user.id }, data: { failedLogins: 0 } })
+  }
+
+  // Cek status setelah password benar — user nonaktif tidak boleh punya sesi.
+  // Tanpa ini login sukses tapi tiap request API kena 403 di authRequired → loading tak berujung di FE.
+  if (user.status === 'inactive') {
+    auditAuth({ action: 'LOGIN_FAILED', email: user.email, userId: user.id, ip: ipAddress, userAgent, detail: 'account_inactive' })
+    throw new ResponseError(403, 'Akun Anda nonaktif. Hubungi Super Admin.', 'ACCOUNT_INACTIVE')
+  }
+
+  await pruneAndEnforce(user.id)
+  const result = await createSessionForUser(user, ipAddress, userAgent, res)
+  auditAuth({ action: 'LOGIN_SUCCESS', email: user.email, userId: user.id, ip: ipAddress, userAgent })
+  return result
+}
+
+/**
+ * Login via Keycloak (IAM Universitas). Identitas (email) sudah dibuktikan
+ * Keycloak; di sini hanya cek apakah email terdaftar, aktif, dan tidak diblokir,
+ * lalu terbitkan sesi milik sistem (cookie refresh_token + access token).
+ * Tidak memakai sesi Keycloak sama sekali.
  *
  * Cookie pakai opsi default (sameSite=lax, host-only) — cukup karena FE & BE
  * same-site (sama-sama di bawah ub.ac.id), meski beda origin.
@@ -112,12 +219,7 @@ export const loginKeycloakService = async (kcUser: { email?: string }, ipAddress
     throw new ResponseError(403, 'Akun Anda nonaktif. Hubungi Super Admin.', 'ACCOUNT_INACTIVE')
   }
 
-  // Blokir manual super admin. Wajib dicek di sini — SSO satu-satunya jalur masuk,
-  // jadi tanpa gate ini tombol "Kunci akun" di panel admin tidak berefek apa pun.
-  if (user.isLocked) {
-    auditAuth({ action: 'LOGIN_FAILED', email: user.email, userId: user.id, ip: ipAddress, userAgent, detail: 'account_locked' })
-    throw new ResponseError(403, 'Akun Anda dikunci. Hubungi Super Admin.', 'ACCOUNT_LOCKED')
-  }
+  await enforceLockGate(user, ipAddress, userAgent)
 
   await pruneAndEnforce(user.id)
   const result = await createSessionForUser(user, ipAddress, userAgent, res)

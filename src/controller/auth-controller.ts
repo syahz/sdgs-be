@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express'
 import {
+  loginService,
   loginKeycloakService,
   refreshService,
   recordActivityService,
@@ -26,9 +27,21 @@ import {
 
 const LOGIN_PATH = () => `${FRONTEND_URL ?? ''}/login`
 
+export const loginController = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const ip = req.ip ?? req.socket.remoteAddress ?? null
+    const ua = req.headers['user-agent'] ?? null
+    const result = await loginService(req.body, ip, ua, res)
+    res.status(200).json({ data: result })
+  } catch (e) {
+    next(e)
+  }
+}
+
 // ── Keycloak (IAM Universitas) — OIDC Authorization Code + PKCE ──────────
-// Satu-satunya jalur login. redirect_uri yang di-whitelist di Keycloak
-// = KEYCLOAK_REDIRECT_URI (origin BE), lalu redirect balik ke FE.
+// Jalur login kedua, berdampingan dengan login password di atas. redirect_uri
+// yang di-whitelist di Keycloak = KEYCLOAK_REDIRECT_URI (origin BE), lalu
+// redirect balik ke FE.
 
 export const keycloakStartController = (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -132,7 +145,9 @@ export const logoutController = async (req: Request, res: Response, next: NextFu
 
 export const getMeController = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    res.status(200).json({ data: (req as UserRequest).user })
+    const user = (req as UserRequest).user
+    const { password: _, ...safeUser } = user as any
+    res.status(200).json({ data: safeUser })
   } catch (e) {
     next(e)
   }

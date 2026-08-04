@@ -103,6 +103,7 @@ model User {
   id             String     @id @default(uuid())
   name           String
   email          String     @unique
+  password       String? // null = akun SSO-only (belum pernah diberi password lokal)
   role           UserRole
   avatarInitials String
   status         UserStatus @default(active)
@@ -111,16 +112,17 @@ model User {
   orgUnitId String?
   orgUnit   OrgUnit? @relation(fields: [orgUnitId], references: [id])
 
-  // Blokir manual oleh super admin. Berlaku untuk SSO (satu-satunya jalur login).
-  // ponytail: tidak ada failedLogins/lockedUntil — tanpa password lokal tidak ada
-  // brute-force kredensial yang perlu dihitung; kunci/buka murni keputusan admin.
-  isLocked Boolean @default(false)
+  // Proteksi brute-force login password. isLocked juga dihormati jalur SSO.
+  failedLogins Int       @default(0)
+  isLocked     Boolean   @default(false)
+  lockedUntil  DateTime? // auto-unlock setelah waktu ini; null = lock manual (dibuka super admin)
 
   submissions       Submission[]       @relation("SubmittedBy")
   reviewComments    ReviewComment[]
   universityRecords UniversityRecord[]
   submissionLogs    SubmissionLog[]    @relation("SubmissionLogActor")
   refreshTokens     RefreshToken[]
+  sdgConfigVersions SdgConfigVersion[] @relation("SdgConfigCreatedBy")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -344,4 +346,53 @@ model RefreshToken {
   @@index([familyId])
   @@index([idleExpiresAt])
   @@map("refresh_tokens")
+}
+
+// ─────────────── SDG CONFIG VERSION (kerangka indikator THE per tahun) ───────────────
+
+enum ConfigStatus {
+  draft
+  active
+  archived
+}
+
+/**
+ * Kerangka indikator THE untuk satu tahun, disimpan sebagai payload JSON utuh.
+ * THE Impact Rankings mengubah indikator/bobotnya tiap tahun. Menyimpannya
+ * per tahun membuat submission tahun lama tetap dinilai dengan aturan tahunnya
+ * sendiri, bukan aturan kerangka terbaru.
+ * Payload disimpan utuh (bukan dinormalisasi per indikator) karena unit
+ * perubahannya memang "kerangka satu tahun": divalidasi, dibandingkan, dan
+ * diaktifkan sebagai satu kesatuan. Tidak ada query yang memfilter per
+ * indikator di SQL.
+ * Satu baris `active` per tahun ditegakkan partial unique index di migration —
+ * Prisma belum bisa mendeklarasikan index berkondisi.
+ */
+model SdgConfigVersion {
+  id     String       @id @default(uuid())
+  year   Int
+  status ConfigStatus @default(draft)
+
+  // { schemaVersion, year, sdgs[], quantFormulas, qualQuestions, groupTitles }
+  payload  Json
+  // sha256 payload ter-kanonikalisasi — mendeteksi draft lain menyusup
+  // di antara pratinjau dan aktivasi.
+  checksum String
+
+  note       String? @db.Text // catatan admin, mis. "THE 2027 rev.2"
+  sourceName String? // nama berkas asal saat diunggah
+
+  createdByUserId String?
+  createdBy       User?    @relation("SdgConfigCreatedBy", fields: [createdByUserId], references: [id])
+  createdByName   String
+  createdAt       DateTime @default(now())
+
+  activatedByName String?
+  activatedAt     DateTime?
+  archivedAt      DateTime?
+
+  updatedAt DateTime @updatedAt
+
+  @@index([year, status])
+  @@map("sdg_config_versions")
 }

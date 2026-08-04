@@ -26,9 +26,24 @@
  *       <=2023 → 4, 2024-2029 → 3, 2030-2039 → 2, 2040-2049 → 1, >=2050 → 0.5, else 0
  */
 
-import { THE_SDG_CONFIG_2026, QUANT_FORMULAS, type SdgIndicator, type QualAnswer, type QuantAnswer, type BiblAnswer, type SdgAnswers } from "./the-sdg-config";
+import { type SdgConfig, type QuantFormula, type SdgIndicator, type QualAnswer, type QuantAnswer, type BiblAnswer, type SdgAnswers } from "./the-sdg-config";
 
 export type { QualAnswer, QuantAnswer, BiblAnswer, SdgAnswers };
+
+/**
+ * Config tahun yang dipakai untuk menilai satu SDG, di-INJEKSI ke engine.
+ *
+ * Sengaja tidak memakai parameter `year` yang membuat engine mencari confignya
+ * sendiri: seluruh pemanggil di frontend berada di dalam `useMemo` (sinkron),
+ * sehingga resolusi mandiri hanya mungkin lewat state global modul — dan itu
+ * membuat halaman riwayat 2025 serta form 2027 di tab yang sama saling menimpa.
+ * Dengan injeksi, engine tetap fungsi murni: sinkron, aman lintas tahun, dan
+ * bisa diuji tanpa database maupun React.
+ */
+export interface SdgScoringContext {
+  sdg: SdgConfig;
+  quantFormulas: Record<string, QuantFormula>;
+}
 
 export interface QualIndicatorScore {
   indicatorCode: string;
@@ -153,8 +168,8 @@ function numField(answers: SdgAnswers, code: string, key: string): number | null
  * Compute the PDF-exact raw ratio for a QUANTITATIVE indicator.
  * Ratio only — NO 0–100 normalisation (that is THE central's job, needs the cohort).
  */
-export function computeQuantRaw(ind: SdgIndicator, answers: SdgAnswers): QuantRawResult {
-  const f = QUANT_FORMULAS[ind.code];
+export function computeQuantRaw(ind: SdgIndicator, answers: SdgAnswers, formulas: Record<string, QuantFormula>): QuantRawResult {
+  const f = formulas[ind.code];
   const direction = f?.direction ?? "higher";
 
   // No recipe (e.g. 4.3.6/4.3.7 year-capture helpers) → not scored as a ratio.
@@ -203,9 +218,9 @@ export function computeQuantRaw(ind: SdgIndicator, answers: SdgAnswers): QuantRa
 }
 
 /** Build the display-facing quantitative score row (contributes 0 to the SDG total). */
-export function buildQuantScore(ind: SdgIndicator, answers: SdgAnswers): QuantIndicatorScore {
-  const raw = computeQuantRaw(ind, answers);
-  const f = QUANT_FORMULAS[ind.code];
+export function buildQuantScore(ind: SdgIndicator, answers: SdgAnswers, formulas: Record<string, QuantFormula>): QuantIndicatorScore {
+  const raw = computeQuantRaw(ind, answers, formulas);
+  const f = formulas[ind.code];
   const isProportion = !!f && (f.pattern === "A" || f.pattern === "D" || f.pattern === "E");
   const ratioPct = isProportion && raw.value !== null ? parseFloat((raw.value * 100).toFixed(2)) : null;
   return {
@@ -249,8 +264,9 @@ export function compareQuantYear(
   ind: SdgIndicator,
   currentAnswers: SdgAnswers,
   prior: { year: number; answers: SdgAnswers } | null,
+  formulas: Record<string, QuantFormula>,
 ): QuantTrend {
-  const cur = computeQuantRaw(ind, currentAnswers);
+  const cur = computeQuantRaw(ind, currentAnswers, formulas);
   const direction = cur.direction;
   if (cur.value === null) {
     return { indicatorCode: ind.code, state: "not_assessed", current: null, prior: null, delta: null, improved: null, direction };
@@ -258,7 +274,7 @@ export function compareQuantYear(
   if (!prior) {
     return { indicatorCode: ind.code, state: "baseline", current: cur.value, prior: null, delta: null, improved: null, direction };
   }
-  const pr = computeQuantRaw(ind, prior.answers);
+  const pr = computeQuantRaw(ind, prior.answers, formulas);
   if (pr.value === null) {
     return { indicatorCode: ind.code, state: "baseline", current: cur.value, prior: null, delta: null, improved: null, direction, priorYear: prior.year };
   }
@@ -277,9 +293,10 @@ export function compareQuantYear(
 export function resolveQuantPrior(
   ind: SdgIndicator,
   priors: { year: number; answers: SdgAnswers }[],
+  formulas: Record<string, QuantFormula>,
 ): { year: number; answers: SdgAnswers } | null {
   for (const p of priors) {
-    if (computeQuantRaw(ind, p.answers).value !== null) return p;
+    if (computeQuantRaw(ind, p.answers, formulas).value !== null) return p;
   }
   return null;
 }
@@ -325,8 +342,8 @@ export function calcQualScore(ind: SdgIndicator, ans: QualAnswer | undefined): {
   return { score, max, pct: Math.round((score / max) * 100), p1, p2, p3, p4, wc };
 }
 
-export function calcSdgEstimate(sdgNum: number, answers: SdgAnswers): number {
-  const cfg = THE_SDG_CONFIG_2026[sdgNum];
+export function calcSdgEstimate(ctx: SdgScoringContext, answers: SdgAnswers): number {
+  const cfg = ctx.sdg;
   if (!cfg) return 0;
 
   let weightedScore = 0;
@@ -356,8 +373,8 @@ export function calcSdgEstimate(sdgNum: number, answers: SdgAnswers): number {
   return parseFloat(weightedScore.toFixed(2));
 }
 
-export function calcSdgBreakdown(sdgNum: number, answers: SdgAnswers): SdgScoreBreakdown {
-  const cfg = THE_SDG_CONFIG_2026[sdgNum];
+export function calcSdgBreakdown(ctx: SdgScoringContext, answers: SdgAnswers): SdgScoreBreakdown {
+  const cfg = ctx.sdg;
   if (!cfg) return { total: 0, byIndicator: [], byGroupScore: {}, byGroupWeight: {} };
 
   const byIndicator: IndicatorScore[] = [];
@@ -380,7 +397,7 @@ export function calcSdgBreakdown(sdgNum: number, answers: SdgAnswers): SdgScoreB
     if (ind.type === "QUANTITATIVE") {
       // Ratio only (PDF-exact); contributes 0. Excluded from group weight & SDG total so it
       // does NOT drag the score down (option: excluded, not zeroed). Surfaced for display + trend.
-      byIndicator.push(buildQuantScore(ind, answers));
+      byIndicator.push(buildQuantScore(ind, answers, ctx.quantFormulas));
       continue;
     }
 

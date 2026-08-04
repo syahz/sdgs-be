@@ -36,7 +36,8 @@ export const authRequired: RequestHandler = async (req, res: Response, next: Nex
     ;(req as UserRequest).user = user
     next()
   } catch (err) {
-    logger.error('JWT verify error:', err)
+    // Meta sebagai objek — argumen kedua bergaya `('msg:', err)` dibuang oleh printf logger.
+    logger.error('JWT verify error', { action: 'JWT_VERIFY_FAILED', error: String(err) })
     res.status(401).json({ message: 'Invalid or expired token', code: 'UNAUTHORIZED' })
   }
 }

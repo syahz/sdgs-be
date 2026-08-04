@@ -9,7 +9,11 @@
     "start": "node dist/app.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "seed": "ts-node prisma/seed.ts"
+    "seed": "ts-node prisma/seed.ts",
+    "seed:config": "ts-node prisma/seed-sdg-config-2026.ts",
+    "check:config": "ts-node scripts/test-config-registry.ts && ts-node scripts/test-config-cache.ts",
+    "check:parity": "ts-node scripts/verify-scoring-parity.ts",
+    "check:drift": "ts-node scripts/check-points-drift.ts"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"
@@ -24,6 +28,7 @@
     "express-rate-limit": "^8.5.2",
     "helmet": "^8.0.0",
     "jsonwebtoken": "^9.0.2",
+    "sanitize-html": "^2.17.6",
     "winston": "^3.13.0",
     "winston-daily-rotate-file": "^5.0.0",
     "zod": "^3.23.8"
@@ -35,6 +40,7 @@
     "@types/express": "^5.0.0",
     "@types/jsonwebtoken": "^9.0.6",
     "@types/node": "^22.0.0",
+    "@types/sanitize-html": "^2.16.1",
     "prisma": "^6.0.0",
     "ts-node": "^10.9.2",
     "ts-node-dev": "^2.0.0",

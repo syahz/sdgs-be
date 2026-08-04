@@ -1,4 +1,5 @@
 import { PrismaClient, OrgUnitType } from '@prisma/client'
+import bcrypt from 'bcryptjs'
 import { generateAvatarInitials } from '../src/model/user-model'
 
 const prisma = new PrismaClient()
@@ -8,16 +9,27 @@ const prisma = new PrismaClient()
  * Tidak ada default — seeder tidak boleh menciptakan akun istimewa yang alamatnya
  * bisa ditebak siapa pun yang membaca repo ini.
  *
- * Akun dibuat TANPA password: autentikasi sepenuhnya lewat Keycloak (IAM UB),
- * jadi email di sini wajib sama persis dengan email akun IAM yang bersangkutan.
+ * SEED_SUPER_ADMIN_PASSWORD opsional:
+ *   - diisi  → akun bisa login email+password DAN lewat SSO
+ *   - kosong → akun SSO-only, hanya bisa masuk lewat Akun UB
+ *
+ * Email wajib sama persis dengan email akun IAM kalau jalur SSO mau dipakai.
+ * Password tidak pernah dicetak ke log.
  *
  * Contoh:
- *   SEED_SUPER_ADMIN_EMAILS="budi@ub.ac.id,siti@ub.ac.id" npx prisma db seed
+ *   SEED_SUPER_ADMIN_EMAILS="budi@ub.ac.id,siti@ub.ac.id" \
+ *   SEED_SUPER_ADMIN_PASSWORD='...' npx prisma db seed
  */
 const superAdminEmails = (process.env.SEED_SUPER_ADMIN_EMAILS ?? '')
   .split(',')
   .map((e) => e.trim().toLowerCase())
   .filter(Boolean)
+
+const seedPassword = process.env.SEED_SUPER_ADMIN_PASSWORD ?? ''
+
+if (seedPassword && seedPassword.length < 8) {
+  throw new Error('SEED_SUPER_ADMIN_PASSWORD minimal 8 karakter. Seeding dibatalkan.')
+}
 
 /** "budi.santoso@ub.ac.id" → "Budi Santoso". Nama asli diperbaiki admin lewat UI. */
 function nameFromEmail(email: string): string {
@@ -70,21 +82,41 @@ async function main() {
     console.log('  Set env-nya lalu jalankan ulang, contoh:')
     console.log('  SEED_SUPER_ADMIN_EMAILS="nama@ub.ac.id" npx prisma db seed')
   } else {
-    console.log(`Seeding ${superAdminEmails.length} super_admin (tanpa password, login via SSO)...`)
+    const mode = seedPassword ? 'email+password & SSO' : 'SSO-only (tanpa password)'
+    console.log(`Seeding ${superAdminEmails.length} super_admin — ${mode}...`)
+
+    // Hash sekali, bukan per-user: bcrypt cost 10 lambat by design.
+    const hashed = seedPassword ? bcrypt.hashSync(seedPassword, 10) : null
+
     for (const email of superAdminEmails) {
       const name = nameFromEmail(email)
       await prisma.user.upsert({
         where: { email },
-        update: { role: 'super_admin', status: 'active' },
+        // Password hanya ditimpa bila env diisi — menjalankan ulang seeder tanpa
+        // SEED_SUPER_ADMIN_PASSWORD tidak boleh menghapus password yang sudah ada.
+        update: {
+          role: 'super_admin',
+          status: 'active',
+          isLocked: false,
+          failedLogins: 0,
+          lockedUntil: null,
+          ...(hashed ? { password: hashed } : {})
+        },
         create: {
           name,
           email,
+          password: hashed,
           role: 'super_admin',
           avatarInitials: generateAvatarInitials(name),
           status: 'active'
         }
       })
       console.log(`  super_admin: ${email}`)
+    }
+
+    if (seedPassword) {
+      console.log('  Password diambil dari SEED_SUPER_ADMIN_PASSWORD (tidak dicetak).')
+      console.log('  Ganti lewat Settings > Ganti Password setelah login pertama.')
     }
   }
 
