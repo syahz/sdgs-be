@@ -21,6 +21,32 @@ const LOCK_DURATION_MINUTES = 15
 /** Idle window — sesi mati bila tak ada aktivitas user selama durasi ini (default 30 menit). */
 const IDLE_TIMEOUT = Number(IDLE_TIMEOUT_SECONDS ?? 1800)
 
+/**
+ * SATU pesan untuk SEMUA kegagalan kredensial: email tak dikenal, password salah,
+ * dan akun yang hanya punya jalur SSO. Ketiganya juga memakai status dan `code`
+ * yang sama, jadi response-nya tidak bisa dibedakan.
+ *
+ * Kenapa: pesan yang berbeda mengubah form login jadi alat enumerasi. "Akun ini
+ * belum punya password" memberi tahu penyerang bahwa email itu terdaftar DAN
+ * bahwa akun itu SSO-only — persis daftar target untuk phishing halaman login UB
+ * palsu, karena korbannya sudah pasti terbiasa masuk lewat SSO.
+ *
+ * Petunjuk SSO tetap ada, tapi TANPA SYARAT — ditampilkan untuk setiap kegagalan
+ * kredensial. Karena tidak bergantung pada keadaan akun, kehadirannya tidak
+ * menyimpulkan apa pun. Pembedaan sebenarnya hanya hidup di log audit
+ * (`unknown_email` / `wrong_password` / `sso_only`).
+ */
+const CREDENTIAL_ERROR =
+  'Email atau password salah. Bila akun Anda terdaftar lewat Akun UB, gunakan tombol "Masuk dengan Akun UB".'
+
+/**
+ * Hash pembanding untuk request yang tidak punya password asli untuk dicek.
+ * Tanpa ini, email tak dikenal dan akun SSO-only membalas jauh lebih cepat
+ * daripada password salah (bcrypt dilewati) — selisih waktu itu sendiri sudah
+ * cukup untuk enumerasi, meski pesannya sudah diseragamkan.
+ */
+const TIMING_DUMMY_HASH = bcrypt.hashSync('timing-equalizer-not-a-real-password', 10)
+
 /** Tenggat idle baru: sekarang + IDLE_TIMEOUT. */
 function idleDeadline(): Date {
   return new Date(Date.now() + IDLE_TIMEOUT * 1000)
@@ -147,14 +173,16 @@ export const loginService = async (request: LoginRequest, ipAddress: string | nu
     include: { orgUnit: true }
   })
   if (!user) {
+    bcrypt.compareSync(req.password, TIMING_DUMMY_HASH)
     auditAuth({ action: 'LOGIN_FAILED', email: req.email, ip: ipAddress, userAgent, detail: 'unknown_email' })
-    throw new ResponseError(401, 'Invalid email or password', 'INVALID_CREDENTIALS')
+    throw new ResponseError(401, CREDENTIAL_ERROR, 'INVALID_CREDENTIALS')
   }
   await enforceLockGate(user, ipAddress, userAgent)
 
   if (!user.password) {
+    bcrypt.compareSync(req.password, TIMING_DUMMY_HASH)
     auditAuth({ action: 'LOGIN_FAILED', email: user.email, userId: user.id, ip: ipAddress, userAgent, detail: 'sso_only' })
-    throw new ResponseError(401, 'Akun ini belum punya password. Masuk lewat Akun UB.', 'SSO_ONLY')
+    throw new ResponseError(401, CREDENTIAL_ERROR, 'INVALID_CREDENTIALS')
   }
 
   const match = bcrypt.compareSync(req.password, user.password)
@@ -170,7 +198,7 @@ export const loginService = async (request: LoginRequest, ipAddress: string | nu
       }
     })
     auditAuth({ action: 'LOGIN_FAILED', email: user.email, userId: user.id, ip: ipAddress, userAgent, detail: `wrong_password (attempt ${newFailed}${willLock ? ', locked' : ''})` })
-    throw new ResponseError(401, 'Invalid email or password', 'INVALID_CREDENTIALS')
+    throw new ResponseError(401, CREDENTIAL_ERROR, 'INVALID_CREDENTIALS')
   }
 
   if (user.failedLogins > 0) {

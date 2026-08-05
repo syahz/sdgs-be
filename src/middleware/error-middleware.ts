@@ -27,8 +27,12 @@ export const errorMiddleware = async (
   if (res.headersSent) return next(error)
 
   if (error instanceof ZodError) {
+    // Pesan issue pertama dipakai apa adanya — schema menuliskannya dalam bahasa
+    // Indonesia dan siap tampil ke user (mis. "Format email tidak valid").
+    // Sebelumnya selalu "Validation Error", yang tidak memberi tahu apa pun.
+    // `details` tetap dikirim untuk form yang menandai error per-field.
     res.status(400).json({
-      message: 'Validation Error',
+      message: error.errors[0]?.message ?? 'Data yang dikirim tidak valid',
       code: 'VALIDATION_ERROR',
       details: error.errors
     })
@@ -62,6 +66,32 @@ export const errorMiddleware = async (
   }
 
   const requestId = crypto.randomUUID()
+
+  // Database tak terjangkau (mati, kredensial salah, pool habis). Tanpa cabang ini
+  // jatuh ke 500 "Internal Server Error" dan user mengira aplikasinya yang rusak,
+  // padahal ini gangguan infrastruktur yang jelas — 503 + pesan yang jujur.
+  // P1001/P1002/P1017 biasanya lewat InitializationError; P2024 = pool timeout.
+  const DB_DOWN_CODES = ['P1001', 'P1002', 'P1008', 'P1017', 'P2024']
+  if (
+    error instanceof Prisma.PrismaClientInitializationError ||
+    error instanceof Prisma.PrismaClientRustPanicError ||
+    (error instanceof Prisma.PrismaClientKnownRequestError && DB_DOWN_CODES.includes(error.code))
+  ) {
+    logger.error('Database unavailable', {
+      requestId,
+      action: 'DB_UNAVAILABLE',
+      method: req.method,
+      path: req.originalUrl,
+      code: (error as { errorCode?: string; code?: string }).errorCode ?? (error as { code?: string }).code,
+      error: error.message
+    })
+    res.status(503).json({
+      message: 'Server tidak dapat menghubungi database. Coba lagi beberapa saat atau hubungi administrator.',
+      code: 'DB_UNAVAILABLE',
+      requestId
+    })
+    return
+  }
 
   // Prisma: status yang berarti, pesan tetap generik.
   if (

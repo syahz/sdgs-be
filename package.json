@@ -13,7 +13,8 @@
     "seed:config": "ts-node prisma/seed-sdg-config-2026.ts",
     "check:config": "ts-node scripts/test-config-registry.ts && ts-node scripts/test-config-cache.ts",
     "check:parity": "ts-node scripts/verify-scoring-parity.ts",
-    "check:drift": "ts-node scripts/check-points-drift.ts"
+    "check:drift": "ts-node scripts/check-points-drift.ts",
+    "check:errors": "ts-node --transpile-only scripts/check-error-mapping.ts"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"
