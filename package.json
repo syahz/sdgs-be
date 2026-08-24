@@ -14,10 +14,17 @@
     "check:config": "ts-node scripts/test-config-registry.ts && ts-node scripts/test-config-cache.ts",
     "check:parity": "ts-node scripts/verify-scoring-parity.ts",
     "check:drift": "ts-node scripts/check-points-drift.ts",
-    "check:errors": "ts-node --transpile-only scripts/check-error-mapping.ts"
+    "check:errors": "ts-node --transpile-only scripts/check-error-mapping.ts",
+    "check:deps": "ts-node --transpile-only scripts/check-deps-security.ts"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"
+  },
+  "overridesReason": "Semua HIGH di npm audit datang dari dependensi transitif yang di-pin versi rentan oleh paket induknya. Override memaksa versi yang sudah ditambal tanpa menunggu rilis induk. ip-address (via express-rate-limit) = GHSA-mwp4-54f8-5fhr, bypass key rate-limit. nanoid (via sanitize-html>postcss) = GHSA-2v37-7h3g-55p8, loop tak berujung. deepmerge-ts (via prisma CLI, devDep) = GHSA-ggr8-5vv4-36mx.",
+  "overrides": {
+    "ip-address": "^10.5.0",
+    "nanoid": "^3.3.18",
+    "deepmerge-ts": "^8.0.0"
   },
   "dependencies": {
     "@prisma/client": "^6.0.0",

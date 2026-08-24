@@ -9,10 +9,17 @@ if (process.env.NODE_ENV === 'production' && !process.env.FRONTEND_URL) {
   throw new Error('FRONTEND_URL kosong di production — .env tidak terbaca. CORS akan menolak semua request.')
 }
 
+/**
+ * Slash di ujung dibuang. CORS membandingkan origin PERSIS string-nya, dan
+ * header `Origin` dari browser tidak pernah punya slash di ujung — jadi
+ * `FRONTEND_URL=https://silaras.ub.ac.id/` menolak SEMUA XHR tanpa jejak error
+ * di log BE. Gejalanya di FE: "Tidak dapat terhubung ke server".
+ */
+export const FRONTEND_URL = process.env.FRONTEND_URL?.replace(/\/+$/, '')
+
 export const {
   PORT,
   LOG_DIR,
-  FRONTEND_URL,
   NODE_ENV,
   ACCESS_TOKEN_SECRET,
   ACCESS_TOKEN_EXPIRES,
