@@ -13,11 +13,34 @@ import {
 } from '../../controller/auth-controller'
 import { authRequired } from '../../middleware/auth-middleware'
 import { loginLimiter } from '../../middleware/rate-limit'
+import { passwordLoginEnabled } from '../../config'
+import { ResponseError } from '../../error/response-error'
 
 const router = Router()
 
 // Public (kredensial = cookie refresh_token)
-router.post('/login', loginLimiter, loginController)
+//
+// LOGIN EMAIL+PASSWORD dikendalikan env `PASSWORD_LOGIN_ENABLED` (default OFF,
+// permintaan klien) — masuk hanya lewat IAM Universitas di /keycloak.
+// `loginController` + `loginService` + `loginLimiter` tetap utuh; menyalakan =
+// set PASSWORD_LOGIN_ENABLED=true di .env lalu restart BE.
+//
+// Saat OFF, path tetap didaftarkan tapi menolak dengan pesan yang jelas. Kalau
+// dibiarkan 404, FE yang flag-nya terlanjur ON hanya melihat "Login gagal"
+// generik dan tidak ada petunjuk bahwa saklar BE-nya yang belum dibuka.
+if (passwordLoginEnabled) {
+  router.post('/login', loginLimiter, loginController)
+} else {
+  router.post('/login', (_req, _res, next) =>
+    next(
+      new ResponseError(
+        403,
+        'Login email & password dinonaktifkan. Gunakan tombol "Masuk dengan Akun UB".',
+        'PASSWORD_LOGIN_DISABLED'
+      )
+    )
+  )
+}
 router.post('/refresh', refreshController)
 router.post('/activity', activityController)
 router.delete('/logout', logoutController)

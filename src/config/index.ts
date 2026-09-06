@@ -17,6 +17,18 @@ if (process.env.NODE_ENV === 'production' && !process.env.FRONTEND_URL) {
  */
 export const FRONTEND_URL = process.env.FRONTEND_URL?.replace(/\/+$/, '')
 
+/**
+ * Login email+password. Dimatikan atas permintaan klien (2026-09-02) — masuk
+ * hanya lewat IAM Universitas (Keycloak).
+ *
+ * Default OFF dan hanya string `'true'` yang menyalakan: env yang salah ketik
+ * atau tidak ada berarti jalur password tetap tertutup, bukan terbuka diam-diam.
+ * Pasangannya di FE: `PASSWORD_LOGIN_ENABLED` di
+ * `FE-SDGS/src/features/auth/login-page.tsx` — keduanya harus ON supaya
+ * form muncul DAN endpoint-nya melayani.
+ */
+export const passwordLoginEnabled = process.env.PASSWORD_LOGIN_ENABLED === 'true'
+
 export const {
   PORT,
   LOG_DIR,
