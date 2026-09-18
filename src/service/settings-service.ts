@@ -5,6 +5,7 @@ import { Validation } from '../validation/Validation'
 import { SettingsValidation } from '../validation/settings-validation'
 import { UpdateSettingsRequest, UpdateDeletePinRequest, SettingsResponse, toSettingsResponse, DEFAULT_SETTINGS } from '../model/settings-model'
 import { FieldChange } from '../model/audit-log-model'
+import { UserWithRelations } from '../type/user-request'
 import { logActivity } from './activity-log-service'
 
 const MONTHS = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember']
@@ -72,17 +73,36 @@ export const updateSettingsService = async (request: UpdateSettingsRequest): Pro
 }
 
 /**
- * Set / ganti PIN hapus (6 angka). Jika PIN sudah ada, `currentPin` wajib &
- * harus cocok — cegah orang lain (sesi terbajak) mengganti PIN diam-diam.
+ * Set / ganti PIN hapus (6 angka), diverifikasi dengan PASSWORD AKUN super admin
+ * yang sedang login — bukan PIN lama. Dulu PIN lama wajib, sehingga PIN yang
+ * terlupa tidak bisa diganti sama sekali. Password tetap mencegah sesi terbajak
+ * mengganti PIN diam-diam. Berhasil maupun gagal, keduanya tercatat di activity log.
+ *
+ * Password salah → 403, BUKAN 401: interceptor axios FE memperlakukan 401 sebagai
+ * sesi kedaluwarsa lalu mengulang request (password terkirim & tercatat dua kali).
  */
-export const updateDeletePinService = async (request: UpdateDeletePinRequest): Promise<SettingsResponse> => {
+export const updateDeletePinService = async (
+  request: UpdateDeletePinRequest,
+  currentUser: UserWithRelations
+): Promise<SettingsResponse> => {
   const req = Validation.validate(SettingsValidation.DELETE_PIN, request)
   const settings = await getOrCreateSettings()
+  const verb = settings.deletePinHash ? 'Mengganti' : 'Membuat'
 
-  if (settings.deletePinHash) {
-    if (!req.currentPin || !bcrypt.compareSync(req.currentPin, settings.deletePinHash)) {
-      throw new ResponseError(401, 'PIN saat ini salah', 'PIN_INVALID')
-    }
+  if (!currentUser.password) {
+    throw new ResponseError(
+      400,
+      'Akun Anda belum punya password lokal (masuk lewat SSO). Atur password akun Anda dulu di User Management, lalu ulangi.',
+      'SSO_ONLY'
+    )
+  }
+  if (!bcrypt.compareSync(req.password, currentUser.password)) {
+    await logActivity({
+      category: 'settings',
+      action: 'DELETE_PIN_CHANGE_FAILED',
+      description: `Gagal ${verb.toLowerCase()} PIN hapus data — password akun salah`
+    })
+    throw new ResponseError(403, 'Password akun salah', 'PASSWORD_INVALID')
   }
 
   const updated = await prismaClient.systemSettings.update({
@@ -90,11 +110,12 @@ export const updateDeletePinService = async (request: UpdateDeletePinRequest): P
     data: { deletePinHash: bcrypt.hashSync(req.pin, 10) }
   })
 
-  // Nilai PIN (lama maupun baru) tidak pernah masuk log.
+  // Nilai PIN (lama maupun baru) dan password tidak pernah masuk log.
   await logActivity({
     category: 'settings',
     action: 'DELETE_PIN_CHANGED',
-    description: settings.deletePinHash ? 'Mengganti PIN hapus data' : 'Membuat PIN hapus data'
+    description: `${verb} PIN hapus data (diverifikasi password akun)`,
+    metadata: { verifiedBy: 'password' }
   })
 
   return toSettingsResponse(updated)

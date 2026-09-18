@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express'
 import { getSettingsService, updateSettingsService, updateDeletePinService } from '../service/settings-service'
+import { UserRequest } from '../type/user-request'
 
 export const getSettingsController = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -21,7 +22,7 @@ export const updateSettingsController = async (req: Request, res: Response, next
 
 export const updateDeletePinController = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const result = await updateDeletePinService(req.body)
+    const result = await updateDeletePinService(req.body, (req as UserRequest).user!)
     res.status(200).json({ data: result })
   } catch (e) {
     next(e)

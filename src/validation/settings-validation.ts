@@ -13,6 +13,8 @@ export class SettingsValidation {
 
   static readonly DELETE_PIN = z.object({
     pin: z.string().regex(/^\d{6}$/, 'PIN harus 6 angka'),
-    currentPin: z.string().regex(/^\d{6}$/).optional()
+    // Password akun super admin yang sedang login — pengganti "PIN lama", supaya
+    // PIN yang terlupa tetap bisa diganti tanpa membuka jalan bagi sesi terbajak.
+    password: z.string({ required_error: 'Password akun wajib diisi' }).min(1, 'Password akun wajib diisi').max(200)
   })
 }

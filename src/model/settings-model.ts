@@ -9,10 +9,10 @@ export interface UpdateSettingsRequest {
   mandatorySdgs?: number[]
 }
 
-/** Set/ganti PIN hapus. currentPin wajib jika PIN sudah pernah diatur. */
+/** Set/ganti PIN hapus. Diverifikasi dengan password akun super admin yang login. */
 export interface UpdateDeletePinRequest {
   pin: string
-  currentPin?: string
+  password: string
 }
 
 export type SettingsResponse = {
