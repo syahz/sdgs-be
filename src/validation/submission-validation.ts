@@ -21,4 +21,10 @@ export class SubmissionValidation {
     questionId: z.string().nullable().optional(),
     bibliometricScores: z.record(z.number().min(0).max(100)).optional()
   })
+
+  static readonly ROLLBACK = z.object({
+    year: z.number({ required_error: 'Periode wajib diisi' }).int().min(2000).max(2100),
+    includeApproved: z.boolean().optional().default(false),
+    reason: z.string().trim().max(500, 'Alasan rollback maksimal 500 karakter').optional()
+  })
 }

@@ -9,6 +9,7 @@ import { assertDeletePin } from './settings-service'
 import { resolveConfig, loadConfigCache, type SdgConfigPayload } from '../config/config-registry'
 import { logger } from '../utils/logger'
 import { canonicalJson } from '../utils/canonical-json'
+import { logActivity } from './activity-log-service'
 
 /**
  * Pengelolaan versi kerangka indikator THE oleh super admin.
@@ -242,6 +243,21 @@ export const createConfigDraftService = async (
     },
   })
 
+  await logActivity({
+    category: 'settings',
+    action: 'CONFIG_DRAFT_CREATED',
+    description: `Mengunggah draft kerangka indikator THE ${payload.year}`,
+    year: payload.year,
+    targetId: row.id,
+    metadata: {
+      sourceName: body.sourceName ?? null,
+      note: body.note ?? null,
+      indicatorCount: diff.counts.indicatorsAfter,
+      affectsScoring: diffAffectsScoring(diff),
+      warnings: warnings.length,
+    },
+  })
+
   return {
     id: row.id,
     year: payload.year,
@@ -321,6 +337,15 @@ export const activateConfigVersionService = async (
     cacheYears: years,
   })
 
+  await logActivity({
+    category: 'settings',
+    action: 'CONFIG_ACTIVATED',
+    description: `Mengaktifkan kerangka indikator THE ${draft.year}`,
+    year: draft.year,
+    targetId: draft.id,
+    metadata: { archivedVersionId: aktifLama?.id ?? null, note: draft.note },
+  })
+
   return { id: draft.id, year: draft.year, activatedAt: new Date(), cacheLoaded: loaded }
 }
 
@@ -331,5 +356,12 @@ export const deleteConfigDraftService = async (id: string) => {
     throw new ResponseError(400, 'Hanya draft yang bisa dihapus', 'BAD_REQUEST')
   }
   await prismaClient.sdgConfigVersion.delete({ where: { id } })
+  await logActivity({
+    category: 'settings',
+    action: 'CONFIG_DRAFT_DELETED',
+    description: `Menghapus draft kerangka indikator THE ${row.year}`,
+    year: row.year,
+    targetId: row.id,
+  })
   return { message: 'Draft dihapus' }
 }

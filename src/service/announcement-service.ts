@@ -3,6 +3,7 @@ import { Validation } from '../validation/Validation'
 import { sanitizeString } from '../utils/sanitize'
 import { AnnouncementValidation } from '../validation/announcement-validation'
 import { UpsertAnnouncementRequest, AnnouncementResponse, toAnnouncementResponse } from '../model/announcement-model'
+import { logActivity } from './activity-log-service'
 
 /**
  * Pengumuman aktif untuk banner (null jika tak ada / dimatikan).
@@ -43,6 +44,13 @@ export const upsertAnnouncementService = async (
     : await prismaClient.announcement.create({
         data: { message, active: req.active, updatedByName: actorName }
       })
+
+  await logActivity({
+    category: 'settings',
+    action: 'ANNOUNCEMENT_UPDATED',
+    description: a.active ? 'Memperbarui pengumuman (aktif)' : 'Menonaktifkan pengumuman',
+    metadata: { active: a.active, message: a.message.slice(0, 300) }
+  })
 
   return toAnnouncementResponse(a)
 }

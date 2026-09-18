@@ -21,6 +21,15 @@ export interface ReviewRequest {
   bibliometricScores?: Record<string, number>
 }
 
+/** Rollback seluruh submission satu unit (periode aktif) ke admin unit. */
+export interface RollbackRequest {
+  /** Periode yang dilihat validator saat klik — harus sama dengan periode aktif. */
+  year: number
+  /** Ikut kembalikan submission yang SUDAH di-approve. Default false. */
+  includeApproved?: boolean
+  reason?: string
+}
+
 export type SubmissionWithRelations = Submission & {
   orgUnit: OrgUnit
   submittedBy: { id: string; name: string }

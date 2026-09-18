@@ -3,6 +3,8 @@ import { ResponseError } from '../error/response-error'
 import { Validation } from '../validation/Validation'
 import { OrgUnitValidation } from '../validation/org-unit-validation'
 import { CreateOrgUnitRequest, UpdateOrgUnitRequest, OrgUnitResponse, toOrgUnitResponse } from '../model/org-unit-model'
+import { FieldChange } from '../model/audit-log-model'
+import { logActivity } from './activity-log-service'
 
 export const getOrgUnitsService = async (type?: string): Promise<OrgUnitResponse[]> => {
   const where = type ? { type: type as any } : {}
@@ -21,6 +23,14 @@ export const createOrgUnitService = async (request: CreateOrgUnitRequest): Promi
   const existing = await prismaClient.orgUnit.findFirst({ where: { name: req.name } })
   if (existing) throw new ResponseError(409, 'Nama org unit sudah ada', 'CONFLICT')
   const item = await prismaClient.orgUnit.create({ data: req })
+  await logActivity({
+    category: 'org_unit',
+    action: 'ORG_UNIT_CREATED',
+    description: `Membuat unit kerja ${item.name} (${item.abbreviation})`,
+    orgUnitName: item.name,
+    targetId: item.id,
+    metadata: { abbreviation: item.abbreviation, type: item.type }
+  })
   return toOrgUnitResponse(item)
 }
 
@@ -35,6 +45,26 @@ export const updateOrgUnitService = async (id: string, request: UpdateOrgUnitReq
   }
 
   const updated = await prismaClient.orgUnit.update({ where: { id }, data: req })
+
+  const changes: FieldChange[] = []
+  const fields: [string, string, string][] = [
+    ['Nama', existing.name, updated.name],
+    ['Singkatan', existing.abbreviation, updated.abbreviation],
+    ['Jenis', existing.type, updated.type]
+  ]
+  for (const [field, before, after] of fields) {
+    if (before !== after) changes.push({ field, before, after })
+  }
+  if (changes.length > 0) {
+    await logActivity({
+      category: 'org_unit',
+      action: 'ORG_UNIT_UPDATED',
+      description: `Mengubah unit kerja ${updated.name}`,
+      orgUnitName: updated.name,
+      targetId: updated.id,
+      metadata: { changes }
+    })
+  }
   return toOrgUnitResponse(updated)
 }
 
@@ -48,5 +78,12 @@ export const deleteOrgUnitService = async (id: string): Promise<{ message: strin
   }
 
   await prismaClient.orgUnit.delete({ where: { id } })
+  await logActivity({
+    category: 'org_unit',
+    action: 'ORG_UNIT_DELETED',
+    description: `Menghapus unit kerja ${existing.name} (${existing.abbreviation})`,
+    orgUnitName: existing.name,
+    targetId: existing.id
+  })
   return { message: 'OrgUnit berhasil dihapus' }
 }

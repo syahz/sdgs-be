@@ -7,10 +7,15 @@ import { publicRouter } from '../route/public-api'
 import { privateRouter } from '../route/private-api'
 import { errorMiddleware } from '../middleware/error-middleware'
 import { globalLimiter } from '../middleware/rate-limit'
+import { requestContextMiddleware } from '../utils/request-context'
 
 export const web = express()
 
 web.set('trust proxy', 1)
+
+// Paling awal: seluruh handler berikutnya berjalan di dalam konteks request,
+// sehingga logActivity() bisa membaca pelaku/IP tanpa diteruskan manual.
+web.use(requestContextMiddleware)
 
 const corsOptions = {
   origin: FRONTEND_URL || 'http://localhost:3010',

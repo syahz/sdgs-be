@@ -1,9 +1,9 @@
 import { prismaClient } from '../application/database'
-import { Prisma } from '@prisma/client'
+import { Prisma, SubmissionStatus } from '@prisma/client'
 import { ResponseError } from '../error/response-error'
 import { Validation } from '../validation/Validation'
 import { SubmissionValidation } from '../validation/submission-validation'
-import { CreateSubmissionRequest, UpdateSubmissionRequest, ReviewRequest, SubmissionWithRelations, toSubmissionResponse } from '../model/submission-model'
+import { CreateSubmissionRequest, UpdateSubmissionRequest, ReviewRequest, RollbackRequest, SubmissionWithRelations, toSubmissionResponse } from '../model/submission-model'
 import { UserWithRelations } from '../type/user-request'
 import { calcSdgEstimate } from '../config/sdg-scoring'
 import { scoringContext } from '../config/config-registry'
@@ -11,8 +11,9 @@ import { unwrapTheAnswers } from '../config/the-answer-key'
 import { getSettingsService, assertDeletePin } from './settings-service'
 import { getSubmissionWindowFromConfig, isWithinWindow, isCutoffPassed, SubmissionWindow } from '../config/submission-window'
 import { sanitizeJson, sanitizeString } from '../utils/sanitize'
-import { buildReviewerAliases, maskComment, maskLog, shouldMaskReviewers } from '../model/reviewer-alias'
+import { buildReviewerAliases, maskComment, maskLog, shouldMaskReviewers, SYSTEM_NOTE_PREFIXES } from '../model/reviewer-alias'
 import { recordAudit, AuditContext } from './audit-log-service'
+import { logActivity, SYSTEM_ACTOR } from './activity-log-service'
 import { buildChanges, buildSnapshot } from '../model/audit-log-model'
 
 export async function getWindow() {
@@ -158,6 +159,17 @@ export const createSubmissionService = async (request: CreateSubmissionRequest, 
     data: { submissionId: item.id, event: 'created', toStatus: 'draft', actorUserId: currentUser.id }
   })
 
+  await logActivity({
+    category: 'submission',
+    action: 'SUBMISSION_DRAFT_CREATED',
+    description: `Membuat draft SDG ${item.sdgId} periode ${item.year}`,
+    orgUnitName: item.orgUnit.name,
+    sdgId: item.sdgId,
+    year: item.year,
+    targetId: item.id,
+    metadata: { points }
+  })
+
   return toSubmissionResponse(item as SubmissionWithRelations)
 }
 
@@ -192,6 +204,20 @@ export const updateSubmissionService = async (id: string, request: UpdateSubmiss
 
   await prismaClient.submissionLog.create({
     data: { submissionId: id, event: 'updated', fromStatus: item.status as any, toStatus: item.status as any, actorUserId: currentUser.id }
+  })
+
+  await logActivity({
+    category: 'submission',
+    action: 'SUBMISSION_DRAFT_SAVED',
+    description:
+      item.status === 'revision'
+        ? `Menyimpan perbaikan revisi SDG ${item.sdgId} periode ${item.year}`
+        : `Menyimpan draft SDG ${item.sdgId} periode ${item.year}`,
+    orgUnitName: item.orgUnit.name,
+    sdgId: item.sdgId,
+    year: item.year,
+    targetId: id,
+    metadata: { status: item.status, points: { before: item.points, after: points } }
   })
 
   return toSubmissionResponse(updated as SubmissionWithRelations)
@@ -239,6 +265,20 @@ export const submitSubmissionService = async (id: string, currentUser: UserWithR
       actorUserId: currentUser.id,
       snapshot: { theAnswers: item.theAnswers, qsAnswers: item.qsAnswers, points: item.points }
     }
+  })
+
+  const resubmit = toStatus === 'resubmitted'
+  await logActivity({
+    category: 'submission',
+    action: resubmit ? 'SUBMISSION_RESUBMITTED' : 'SUBMISSION_SUBMITTED',
+    description: resubmit
+      ? `Mengirim ulang revisi SDG ${item.sdgId} periode ${item.year} ke validator`
+      : `Mengirim SDG ${item.sdgId} periode ${item.year} ke validator`,
+    orgUnitName: item.orgUnit.name,
+    sdgId: item.sdgId,
+    year: item.year,
+    targetId: id,
+    metadata: { fromStatus, toStatus, points: item.points }
   })
 
   return toSubmissionResponse(updated as SubmissionWithRelations)
@@ -339,8 +379,35 @@ export const reviewSubmissionService = async (id: string, request: ReviewRequest
     }
   })
 
+  // Teks catatan sengaja TIDAK disalin ke activity log — catatan validator bisa
+  // dihapus lewat rollback dan tidak boleh tertinggal salinannya di tempat lain.
+  const activity = REVIEW_ACTIVITY[req.action]
+  await logActivity({
+    category: 'review',
+    action: activity.action,
+    description: `${activity.verb} SDG ${item.sdgId} periode ${item.year}`,
+    orgUnitName: item.orgUnit.name,
+    sdgId: item.sdgId,
+    year: item.year,
+    targetId: id,
+    metadata: {
+      fromStatus,
+      toStatus,
+      hasComment: !!cleanComment,
+      ...(req.questionId ? { questionId: req.questionId } : {}),
+      ...(req.bibliometricScores ? { bibliometricScores: req.bibliometricScores } : {})
+    }
+  })
+
   return toSubmissionResponse(updated as SubmissionWithRelations)
 }
+
+const REVIEW_ACTIVITY = {
+  approve: { action: 'REVIEW_APPROVED', verb: 'Menyetujui' },
+  request_revision: { action: 'REVIEW_REVISION_REQUESTED', verb: 'Meminta revisi' },
+  reject: { action: 'REVIEW_REJECTED', verb: 'Menolak' },
+  comment: { action: 'REVIEW_COMMENT', verb: 'Memberi catatan review' }
+} as const
 
 export const getSubmissionLogsService = async (id: string, currentUser: UserWithRelations) => {
   const item = await prismaClient.submission.findUnique({ where: { id } })
@@ -459,7 +526,38 @@ export const autoApproveYearEndService = async (year: number): Promise<{ approve
     ])
   }
 
+  for (const [orgUnitName, sdgIds] of groupSdgsByUnit(pending)) {
+    await logActivity({
+      ...SYSTEM_ACTIVITY,
+      category: 'review',
+      action: 'REVIEW_AUTO_APPROVED',
+      description: `Auto-approve akhir tahun: ${sdgIds.length} submission periode ${year} disetujui otomatis`,
+      orgUnitName,
+      year,
+      metadata: { sdgIds }
+    })
+  }
+
   return { approved: pending.length, year }
+}
+
+/**
+ * Aksi cron dicatat atas nama Sistem secara EKSPLISIT: auto-submit bisa terpicu
+ * lazy di dalam request user (getSubmissionsService), dan tanpa ini aksinya
+ * tercatat seolah dilakukan user yang kebetulan membuka halaman.
+ */
+const SYSTEM_ACTIVITY = { actor: SYSTEM_ACTOR, ip: null, userAgent: null }
+
+/** Aksi massal cron dicatat satu baris per unit kerja, bukan satu per submission. */
+function groupSdgsByUnit(items: { sdgId: number; orgUnit: { name: string } }[]): Map<string, number[]> {
+  const byUnit = new Map<string, number[]>()
+  for (const item of items) {
+    const list = byUnit.get(item.orgUnit.name) ?? []
+    list.push(item.sdgId)
+    byUnit.set(item.orgUnit.name, list)
+  }
+  for (const list of byUnit.values()) list.sort((a, b) => a - b)
+  return byUnit
 }
 
 /**
@@ -472,7 +570,7 @@ export const autoApproveYearEndService = async (year: number): Promise<{ approve
 export const autoSubmitAtCutoffService = async (year: number): Promise<{ submitted: number; year: number }> => {
   const pending = await prismaClient.submission.findMany({
     where: { year, status: { in: ['draft', 'revision'] } },
-    select: { id: true, status: true, submittedByUserId: true }
+    select: { id: true, status: true, sdgId: true, submittedByUserId: true, orgUnit: { select: { name: true } } }
   })
 
   if (pending.length === 0) return { submitted: 0, year }
@@ -503,6 +601,18 @@ export const autoSubmitAtCutoffService = async (year: number): Promise<{ submitt
         }
       })
     ])
+  }
+
+  for (const [orgUnitName, sdgIds] of groupSdgsByUnit(pending)) {
+    await logActivity({
+      ...SYSTEM_ACTIVITY,
+      category: 'submission',
+      action: 'SUBMISSION_AUTO_SUBMITTED',
+      description: `Auto-submit cutoff: ${sdgIds.length} submission periode ${year} dikirim otomatis ke validator`,
+      orgUnitName,
+      year,
+      metadata: { sdgIds }
+    })
   }
 
   return { submitted: pending.length, year }
@@ -564,4 +674,139 @@ export const deleteFacultySubmissionsService = async (orgUnitId: string, year: n
     await deleteAndAudit(item as unknown as DeletableSubmission, ctx)
   }
   return { deleted: items.length, orgUnitName: orgUnit.name, year }
+}
+
+// ─────────────── ROLLBACK ke admin unit (validator / super admin) ───────────────
+
+/**
+ * Status yang dikembalikan ke draft. `approved` hanya ikut bila diminta
+ * eksplisit (includeApproved) — persetujuan adalah keputusan final validator
+ * dan tidak boleh ikut terhapus tanpa sengaja.
+ */
+const ROLLBACK_STATUSES: SubmissionStatus[] = ['submitted', 'under_review', 'resubmitted', 'revision', 'rejected']
+
+/** Event riwayat yang `note`-nya berisi catatan validator (lihat reviewSubmissionService). */
+const REVIEW_NOTE_EVENTS = ['review_started', 'revision_requested', 'approved', 'rejected'] as const
+
+/**
+ * Kembalikan submission satu unit kerja (periode aktif) ke admin unit sebagai draft.
+ *
+ * Latar: tanggal cut-off lupa diatur → semua draft ter-auto-submit ke validator
+ * sebelum unit selesai mengisi. Rollback membalik itu tanpa kehilangan isian unit:
+ *  - TETAP  : jawaban THE/QS dan skor (termasuk nilai bibliometrik) — semua data.
+ *  - HILANG : seluruh komentar & catatan revisi validator (permanen), teks catatan
+ *             validator di riwayat, dan hitungan revisi.
+ *  - Riwayat status tetap utuh, ditambah satu event `rolled_back` per submission.
+ *
+ * Hanya bisa selama cut-off belum lewat: setelah cut-off admin unit tidak bisa
+ * mengedit dan auto-submit akan langsung mengirim ulang semuanya. Urutannya:
+ * perpanjang cut-off di System Settings dulu, baru rollback.
+ */
+export const rollbackFacultySubmissionsService = async (
+  orgUnitId: string,
+  request: RollbackRequest,
+  currentUser: UserWithRelations
+) => {
+  const req = Validation.validate(SubmissionValidation.ROLLBACK, request)
+
+  const window = await getWindow()
+  if (req.year !== window.year) {
+    throw new ResponseError(400, `Rollback hanya bisa untuk periode aktif (${window.year}). Muat ulang halaman.`, 'INVALID_PERIOD')
+  }
+  if (isCutoffPassed(window)) {
+    throw new ResponseError(
+      400,
+      `Cut-off periode ${window.year} sudah lewat. Perpanjang tanggal cut-off di System Settings (Super Admin) terlebih dahulu — tanpa itu admin unit tetap tidak bisa mengedit dan data akan langsung dikirim ulang otomatis.`,
+      'CUTOFF_PASSED'
+    )
+  }
+
+  const orgUnit = await prismaClient.orgUnit.findUnique({ where: { id: orgUnitId } })
+  if (!orgUnit) throw new ResponseError(404, 'Unit kerja tidak ditemukan', 'NOT_FOUND')
+
+  const statuses: SubmissionStatus[] = req.includeApproved ? [...ROLLBACK_STATUSES, 'approved'] : ROLLBACK_STATUSES
+  const reason = req.reason ? sanitizeString(req.reason) : ''
+  const note = `Rollback ke admin unit — catatan validator dihapus${reason ? `. Alasan: ${reason}` : ''}`
+
+  const result = await prismaClient.$transaction(
+    async (tx) => {
+      const candidates = await tx.submission.findMany({
+        where: { orgUnitId, year: req.year, status: { in: statuses } },
+        select: { id: true, sdgId: true, status: true }
+      })
+
+      const rolled: typeof candidates = []
+      for (const item of candidates) {
+        // Update bersyarat pada status lama: kalau validator lain baru saja
+        // mengubahnya (mis. approve), lewati — jangan menimpa keputusan yang
+        // tidak terlihat oleh pelaku rollback.
+        const { count } = await tx.submission.updateMany({
+          where: { id: item.id, status: item.status },
+          data: { status: 'draft', submittedAt: null, revisionCount: 0 }
+        })
+        if (count === 0) continue
+        rolled.push(item)
+        await tx.submissionLog.create({
+          data: {
+            submissionId: item.id,
+            event: 'rolled_back',
+            fromStatus: item.status,
+            toStatus: 'draft',
+            actorUserId: currentUser.id,
+            note
+          }
+        })
+      }
+      if (rolled.length === 0) return { rolled, commentsDeleted: 0, notesCleared: 0 }
+
+      const ids = rolled.map((r) => r.id)
+      const { count: commentsDeleted } = await tx.reviewComment.deleteMany({ where: { submissionId: { in: ids } } })
+      // Catatan cron ("Auto-submit cutoff", "Auto-approve akhir tahun") dibiarkan:
+      // teks itulah penanda baris Sistem di reviewer-alias.
+      const { count: notesCleared } = await tx.submissionLog.updateMany({
+        where: {
+          submissionId: { in: ids },
+          event: { in: [...REVIEW_NOTE_EVENTS] },
+          note: { not: null },
+          NOT: SYSTEM_NOTE_PREFIXES.map((p) => ({ note: { startsWith: p } }))
+        },
+        data: { note: null }
+      })
+      return { rolled, commentsDeleted, notesCleared }
+    },
+    { timeout: 15000 }
+  )
+
+  if (result.rolled.length === 0) {
+    throw new ResponseError(400, `Tidak ada submission ${orgUnit.name} periode ${req.year} yang bisa di-rollback`, 'NOTHING_TO_ROLLBACK')
+  }
+
+  const sorted = [...result.rolled].sort((a, b) => a.sdgId - b.sdgId)
+  const sdgIds = sorted.map((r) => r.sdgId)
+
+  await logActivity({
+    category: 'submission',
+    action: 'SUBMISSION_ROLLED_BACK',
+    description: `Rollback ${sdgIds.length} submission periode ${req.year} ke admin unit — catatan validator dihapus`,
+    orgUnitName: orgUnit.name,
+    year: req.year,
+    targetId: orgUnit.id,
+    metadata: {
+      sdgIds,
+      fromStatus: Object.fromEntries(sorted.map((r) => [r.sdgId, r.status])),
+      includeApproved: req.includeApproved,
+      commentsDeleted: result.commentsDeleted,
+      notesCleared: result.notesCleared,
+      ...(reason ? { reason } : {})
+    }
+  })
+
+  return {
+    orgUnitName: orgUnit.name,
+    year: req.year,
+    rolledBack: sdgIds.length,
+    sdgIds,
+    submissionIds: sorted.map((r) => r.id),
+    commentsDeleted: result.commentsDeleted
+  }
 }

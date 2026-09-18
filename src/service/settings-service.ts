@@ -4,6 +4,28 @@ import { ResponseError } from '../error/response-error'
 import { Validation } from '../validation/Validation'
 import { SettingsValidation } from '../validation/settings-validation'
 import { UpdateSettingsRequest, UpdateDeletePinRequest, SettingsResponse, toSettingsResponse, DEFAULT_SETTINGS } from '../model/settings-model'
+import { FieldChange } from '../model/audit-log-model'
+import { logActivity } from './activity-log-service'
+
+const MONTHS = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember']
+
+type WindowFields = Pick<SettingsResponse, 'submissionYear' | 'windowStartMonth' | 'windowStartDay' | 'windowEndMonth' | 'windowEndDay' | 'mandatorySdgs'>
+
+const fmtStart = (s: WindowFields) => `${s.windowStartDay} ${MONTHS[s.windowStartMonth - 1]} ${s.submissionYear}`
+const fmtEnd = (s: WindowFields) => `${s.windowEndDay} ${MONTHS[s.windowEndMonth - 1]} ${s.submissionYear}`
+
+/** Diff pengaturan yang terbaca manusia — tanggal ditampilkan utuh, bukan angka bulan/hari terpisah. */
+function settingsChanges(before: WindowFields, after: WindowFields): FieldChange[] {
+  const changes: FieldChange[] = []
+  const track = (field: string, b: string | number, a: string | number) => {
+    if (b !== a) changes.push({ field, before: b, after: a })
+  }
+  track('Tahun pelaporan', before.submissionYear, after.submissionYear)
+  track('Mulai pengisian', fmtStart(before), fmtStart(after))
+  track('Cut-off', fmtEnd(before), fmtEnd(after))
+  track('SDG wajib', before.mandatorySdgs.join(', '), after.mandatorySdgs.join(', '))
+  return changes
+}
 
 async function getOrCreateSettings() {
   let settings = await prismaClient.systemSettings.findFirst()
@@ -31,6 +53,21 @@ export const updateSettingsService = async (request: UpdateSettingsRequest): Pro
     where: { id: settings.id },
     data: req
   })
+
+  const changes = settingsChanges(settings, updated)
+  if (changes.length > 0) {
+    const cutoff = changes.find((c) => c.field === 'Cut-off')
+    await logActivity({
+      category: 'settings',
+      action: 'SETTINGS_UPDATED',
+      description: cutoff
+        ? `Mengubah tanggal cut-off: ${cutoff.before} → ${cutoff.after}`
+        : `Mengubah pengaturan sistem (${changes.map((c) => c.field).join(', ')})`,
+      year: updated.submissionYear,
+      metadata: { changes }
+    })
+  }
+
   return toSettingsResponse(updated)
 }
 
@@ -52,6 +89,14 @@ export const updateDeletePinService = async (request: UpdateDeletePinRequest): P
     where: { id: settings.id },
     data: { deletePinHash: bcrypt.hashSync(req.pin, 10) }
   })
+
+  // Nilai PIN (lama maupun baru) tidak pernah masuk log.
+  await logActivity({
+    category: 'settings',
+    action: 'DELETE_PIN_CHANGED',
+    description: settings.deletePinHash ? 'Mengganti PIN hapus data' : 'Membuat PIN hapus data'
+  })
+
   return toSettingsResponse(updated)
 }
 

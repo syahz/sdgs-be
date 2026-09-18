@@ -43,8 +43,12 @@ interface LogLike {
   actor?: ActorLike
 }
 
-/** Catatan yang ditulis otomatis oleh cron, bukan oleh manusia. */
-const SYSTEM_NOTE_PREFIXES = ['Auto-approve akhir tahun', 'Auto-submit cutoff']
+/**
+ * Catatan yang ditulis otomatis oleh cron, bukan oleh manusia. Juga dipakai
+ * rollback: catatan berprefix ini TIDAK boleh dikosongkan, karena tanpa teksnya
+ * baris cron tak lagi dikenali sebagai "Sistem" dan ikut dinomori sbg validator.
+ */
+export const SYSTEM_NOTE_PREFIXES = ['Auto-approve akhir tahun', 'Auto-submit cutoff']
 
 function isSystemLog(note: string | null | undefined): boolean {
   if (!note) return false

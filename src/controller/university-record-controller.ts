@@ -17,6 +17,7 @@ function auditCtx(req: Request): AuditContext {
     actorId: user?.id ?? null,
     actorName: user?.name ?? 'Unknown',
     actorRole: user?.role ?? 'unknown',
+    actorEmail: user?.email ?? null,
     ip: req.ip ?? req.socket.remoteAddress ?? null,
     userAgent: req.headers['user-agent'] ?? null,
     reason

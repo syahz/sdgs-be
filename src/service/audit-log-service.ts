@@ -6,12 +6,14 @@ import {
   toAuditLogResponse
 } from '../model/audit-log-model'
 import { logger } from '../utils/logger'
+import { logActivity } from './activity-log-service'
 
 // Konteks pelaku + forensik yang dibawa dari controller per request.
 export interface AuditContext {
   actorId?: string | null
   actorName: string
   actorRole: string
+  actorEmail?: string | null
   ip?: string | null
   userAgent?: string | null
   reason?: string | null
@@ -59,6 +61,40 @@ export async function recordAudit(params: RecordAuditParams): Promise<void> {
       action: 'AUDIT_WRITE_FAILED',
       error: String(e)
     })
+  }
+
+  // Cermin ke activity log global. Tabel audit di atas tetap sumber riwayat per
+  // sel (modal "riwayat SDG × tahun"); activity log adalah feed gabungan.
+  await logActivity(auditToActivity(params))
+}
+
+function auditToActivity(p: RecordAuditParams): Parameters<typeof logActivity>[0] {
+  const base = {
+    actor: { id: p.ctx.actorId ?? null, name: p.ctx.actorName, role: p.ctx.actorRole, email: p.ctx.actorEmail ?? null },
+    sdgId: p.sdgId,
+    year: p.year,
+    targetId: p.recordId,
+    orgUnitName: p.orgUnitName ?? null,
+    metadata: { changes: p.changes, ...(p.ctx.reason ? { reason: p.ctx.reason } : {}) },
+    ip: p.ctx.ip ?? null,
+    userAgent: p.ctx.userAgent ?? null
+  }
+  // orgUnitName terisi = hapus submission unit kerja oleh super admin.
+  if (p.orgUnitName) {
+    return {
+      ...base,
+      category: 'submission',
+      action: 'SUBMISSION_DELETED',
+      description: `Menghapus submission SDG ${p.sdgId} periode ${p.year}`
+    }
+  }
+  const verb = { CREATE: 'Membuat', UPDATE: 'Mengubah', DELETE: 'Menghapus' }[p.action]
+  const action = ({ CREATE: 'UNIV_RECORD_CREATED', UPDATE: 'UNIV_RECORD_UPDATED', DELETE: 'UNIV_RECORD_DELETED' } as const)[p.action]
+  return {
+    ...base,
+    category: 'university_record',
+    action,
+    description: `${verb} data universitas SDG ${p.sdgId} tahun ${p.year}`
   }
 }
 

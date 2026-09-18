@@ -10,7 +10,8 @@ import { createSessionToken, hashToken } from '../utils/token'
 import { LoginRequest, AuthResponse, toUserPublic } from '../model/auth-model'
 import { REFRESH_TOKEN_EXPIRES_SECONDS, IDLE_TIMEOUT_SECONDS, COOKIE_DOMAIN, NODE_ENV } from '../config'
 import { logger } from '../utils/logger'
-import { auditAuth } from '../utils/audit-logger'
+import { auditAuth, AuthAuditEntry } from '../utils/audit-logger'
+import { logActivity } from './activity-log-service'
 
 const REFRESH_EXPIRES = Number(REFRESH_TOKEN_EXPIRES_SECONDS ?? 60 * 60 * 24 * 30)
 const MAX_SESSIONS = 5
@@ -46,6 +47,35 @@ const CREDENTIAL_ERROR =
  * cukup untuk enumerasi, meski pesannya sudah diseragamkan.
  */
 const TIMING_DUMMY_HASH = bcrypt.hashSync('timing-equalizer-not-a-real-password', 10)
+
+type AuthActor = { id: string; name: string; role: string; email: string }
+
+/**
+ * Jejak autentikasi ke DUA tempat: file audit harian (seperti sebelumnya) dan
+ * activity log DB yang tampil di panel super admin. Tulisan DB sengaja tidak
+ * ditunggu supaya alur login tidak melambat — logActivity menelan error-nya sendiri.
+ *
+ * `user` null = tidak ada akun yang cocok (email tak terdaftar); email yang
+ * dicoba dicatat sebagai pelaku "guest".
+ */
+function trackAuth(entry: AuthAuditEntry, user: AuthActor | null, description: string): void {
+  auditAuth(entry)
+  void logActivity({
+    category: 'auth',
+    action: entry.action === 'LOGOUT' ? 'LOGOUT' : entry.action === 'LOGIN_FAILED' ? 'LOGIN_FAILED' : 'LOGIN',
+    description,
+    actor: user
+      ? { id: user.id, name: user.name, role: user.role, email: user.email }
+      : { id: null, name: entry.email ?? 'Tidak dikenal', role: 'guest', email: entry.email ?? null },
+    ip: entry.ip ?? null,
+    userAgent: entry.userAgent ?? null,
+    metadata: {
+      ...(entry.action === 'LOGIN_SUCCESS' ? { method: 'password' } : {}),
+      ...(entry.action === 'LOGIN_KEYCLOAK' ? { method: 'sso' } : {}),
+      ...(entry.detail ? { reason: entry.detail } : {})
+    }
+  })
+}
 
 /** Tenggat idle baru: sekarang + IDLE_TIMEOUT. */
 function idleDeadline(): Date {
@@ -125,7 +155,7 @@ async function createSessionForUser(user: any, ipAddress: string | null, userAge
  * hanya memblokir login password, sementara pintu SSO tetap terbuka.
  */
 async function enforceLockGate(
-  user: { id: string; email: string; isLocked: boolean; failedLogins: number; lockedUntil: Date | null },
+  user: AuthActor & { isLocked: boolean; failedLogins: number; lockedUntil: Date | null },
   ipAddress: string | null,
   userAgent: string | null
 ): Promise<void> {
@@ -137,6 +167,7 @@ async function enforceLockGate(
       where: { id: user.id },
       data: { isLocked: false, failedLogins: 0, lockedUntil: null }
     })
+    // Hanya file audit: bukan kegagalan, hasil login sesudahnya dicatat terpisah.
     auditAuth({ action: 'LOGIN_FAILED', email: user.email, userId: user.id, ip: ipAddress, userAgent, detail: 'auto_unlocked' })
     user.isLocked = false
     user.failedLogins = 0
@@ -147,7 +178,11 @@ async function enforceLockGate(
   const detail = user.lockedUntil
     ? `account_locked (until ${user.lockedUntil.toISOString()})`
     : 'account_locked (manual)'
-  auditAuth({ action: 'LOGIN_FAILED', email: user.email, userId: user.id, ip: ipAddress, userAgent, detail })
+  trackAuth(
+    { action: 'LOGIN_FAILED', email: user.email, userId: user.id, ip: ipAddress, userAgent, detail },
+    user,
+    'Login gagal — akun terkunci'
+  )
 
   const minsLeft = user.lockedUntil
     ? Math.max(1, Math.ceil((user.lockedUntil.getTime() - Date.now()) / 60000))
@@ -174,14 +209,22 @@ export const loginService = async (request: LoginRequest, ipAddress: string | nu
   })
   if (!user) {
     bcrypt.compareSync(req.password, TIMING_DUMMY_HASH)
-    auditAuth({ action: 'LOGIN_FAILED', email: req.email, ip: ipAddress, userAgent, detail: 'unknown_email' })
+    trackAuth(
+      { action: 'LOGIN_FAILED', email: req.email, ip: ipAddress, userAgent, detail: 'unknown_email' },
+      null,
+      'Login gagal — email tidak terdaftar'
+    )
     throw new ResponseError(401, CREDENTIAL_ERROR, 'INVALID_CREDENTIALS')
   }
   await enforceLockGate(user, ipAddress, userAgent)
 
   if (!user.password) {
     bcrypt.compareSync(req.password, TIMING_DUMMY_HASH)
-    auditAuth({ action: 'LOGIN_FAILED', email: user.email, userId: user.id, ip: ipAddress, userAgent, detail: 'sso_only' })
+    trackAuth(
+      { action: 'LOGIN_FAILED', email: user.email, userId: user.id, ip: ipAddress, userAgent, detail: 'sso_only' },
+      user,
+      'Login gagal — akun ini hanya bisa masuk lewat SSO'
+    )
     throw new ResponseError(401, CREDENTIAL_ERROR, 'INVALID_CREDENTIALS')
   }
 
@@ -197,7 +240,11 @@ export const loginService = async (request: LoginRequest, ipAddress: string | nu
         lockedUntil: willLock ? new Date(Date.now() + LOCK_DURATION_MINUTES * 60000) : null
       }
     })
-    auditAuth({ action: 'LOGIN_FAILED', email: user.email, userId: user.id, ip: ipAddress, userAgent, detail: `wrong_password (attempt ${newFailed}${willLock ? ', locked' : ''})` })
+    trackAuth(
+      { action: 'LOGIN_FAILED', email: user.email, userId: user.id, ip: ipAddress, userAgent, detail: `wrong_password (attempt ${newFailed}${willLock ? ', locked' : ''})` },
+      user,
+      `Login gagal — password salah (percobaan ke-${newFailed}${willLock ? `, akun dikunci ${LOCK_DURATION_MINUTES} menit` : ''})`
+    )
     throw new ResponseError(401, CREDENTIAL_ERROR, 'INVALID_CREDENTIALS')
   }
 
@@ -208,13 +255,21 @@ export const loginService = async (request: LoginRequest, ipAddress: string | nu
   // Cek status setelah password benar — user nonaktif tidak boleh punya sesi.
   // Tanpa ini login sukses tapi tiap request API kena 403 di authRequired → loading tak berujung di FE.
   if (user.status === 'inactive') {
-    auditAuth({ action: 'LOGIN_FAILED', email: user.email, userId: user.id, ip: ipAddress, userAgent, detail: 'account_inactive' })
+    trackAuth(
+      { action: 'LOGIN_FAILED', email: user.email, userId: user.id, ip: ipAddress, userAgent, detail: 'account_inactive' },
+      user,
+      'Login gagal — akun nonaktif'
+    )
     throw new ResponseError(403, 'Akun Anda nonaktif. Hubungi Super Admin.', 'ACCOUNT_INACTIVE')
   }
 
   await pruneAndEnforce(user.id)
   const result = await createSessionForUser(user, ipAddress, userAgent, res)
-  auditAuth({ action: 'LOGIN_SUCCESS', email: user.email, userId: user.id, ip: ipAddress, userAgent })
+  trackAuth(
+    { action: 'LOGIN_SUCCESS', email: user.email, userId: user.id, ip: ipAddress, userAgent },
+    user,
+    'Login dengan email & password'
+  )
   return result
 }
 
@@ -229,7 +284,11 @@ export const loginService = async (request: LoginRequest, ipAddress: string | nu
  */
 export const loginKeycloakService = async (kcUser: { email?: string }, ipAddress: string | null, userAgent: string | null, res: Response): Promise<AuthResponse> => {
   if (!kcUser.email) {
-    auditAuth({ action: 'LOGIN_FAILED', ip: ipAddress, userAgent, detail: 'keycloak_no_email' })
+    trackAuth(
+      { action: 'LOGIN_FAILED', ip: ipAddress, userAgent, detail: 'keycloak_no_email' },
+      null,
+      'Login SSO gagal — IAM tidak mengirim email'
+    )
     throw new ResponseError(401, 'No email from Keycloak', 'UNAUTHORIZED')
   }
 
@@ -238,12 +297,20 @@ export const loginKeycloakService = async (kcUser: { email?: string }, ipAddress
     include: { orgUnit: true }
   })
   if (!user) {
-    auditAuth({ action: 'LOGIN_FAILED', email: kcUser.email, ip: ipAddress, userAgent, detail: 'keycloak_unregistered' })
+    trackAuth(
+      { action: 'LOGIN_FAILED', email: kcUser.email, ip: ipAddress, userAgent, detail: 'keycloak_unregistered' },
+      null,
+      'Login SSO gagal — email belum terdaftar di sistem'
+    )
     throw new ResponseError(401, 'User not found', 'UNAUTHORIZED')
   }
 
   if (user.status === 'inactive') {
-    auditAuth({ action: 'LOGIN_FAILED', email: user.email, userId: user.id, ip: ipAddress, userAgent, detail: 'account_inactive' })
+    trackAuth(
+      { action: 'LOGIN_FAILED', email: user.email, userId: user.id, ip: ipAddress, userAgent, detail: 'account_inactive' },
+      user,
+      'Login SSO gagal — akun nonaktif'
+    )
     throw new ResponseError(403, 'Akun Anda nonaktif. Hubungi Super Admin.', 'ACCOUNT_INACTIVE')
   }
 
@@ -251,7 +318,11 @@ export const loginKeycloakService = async (kcUser: { email?: string }, ipAddress
 
   await pruneAndEnforce(user.id)
   const result = await createSessionForUser(user, ipAddress, userAgent, res)
-  auditAuth({ action: 'LOGIN_KEYCLOAK', email: user.email, userId: user.id, ip: ipAddress, userAgent })
+  trackAuth(
+    { action: 'LOGIN_KEYCLOAK', email: user.email, userId: user.id, ip: ipAddress, userAgent },
+    user,
+    'Login via SSO (Akun UB)'
+  )
   return result
 }
 
@@ -340,9 +411,9 @@ export const logoutService = async (
     if (stored) {
       const u = await prismaClient.user.findUnique({
         where: { id: stored.userId },
-        select: { email: true }
+        select: { id: true, name: true, role: true, email: true }
       })
-      auditAuth({ action: 'LOGOUT', email: u?.email, userId: stored.userId, ip: ipAddress, userAgent })
+      trackAuth({ action: 'LOGOUT', email: u?.email, userId: stored.userId, ip: ipAddress, userAgent }, u, 'Logout')
       if (stored.familyId) {
         await prismaClient.refreshToken.deleteMany({ where: { familyId: stored.familyId } })
       } else {

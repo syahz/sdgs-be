@@ -6,6 +6,16 @@ import { Validation } from '../validation/Validation'
 import { UserValidation } from '../validation/user-validation'
 import { CreateUserRequest, UpdateUserRequest, UserResponse, toUserResponse, generateAvatarInitials } from '../model/user-model'
 import { UserWithRelations } from '../type/user-request'
+import { FieldChange } from '../model/audit-log-model'
+import { ROLE_LABEL } from '../model/activity-log-model'
+import { logActivity } from './activity-log-service'
+
+async function orgUnitNames(ids: (string | null)[]): Promise<Map<string, string>> {
+  const wanted = ids.filter((id): id is string => !!id)
+  if (wanted.length === 0) return new Map()
+  const units = await prismaClient.orgUnit.findMany({ where: { id: { in: wanted } }, select: { id: true, name: true } })
+  return new Map(units.map((u) => [u.id, u.name]))
+}
 
 export const getUsersService = async (filters: { role?: string; orgUnitId?: string; status?: string }): Promise<UserResponse[]> => {
   const where: any = {}
@@ -35,10 +45,8 @@ export const createUserService = async (request: CreateUserRequest): Promise<Use
   const existing = await prismaClient.user.findUnique({ where: { email: req.email } })
   if (existing) throw new ResponseError(409, 'Email sudah terdaftar', 'CONFLICT')
 
-  if (req.orgUnitId) {
-    const orgUnit = await prismaClient.orgUnit.findUnique({ where: { id: req.orgUnitId } })
-    if (!orgUnit) throw new ResponseError(404, 'OrgUnit tidak ditemukan', 'NOT_FOUND')
-  }
+  const orgUnit = req.orgUnitId ? await prismaClient.orgUnit.findUnique({ where: { id: req.orgUnitId } }) : null
+  if (req.orgUnitId && !orgUnit) throw new ResponseError(404, 'OrgUnit tidak ditemukan', 'NOT_FOUND')
 
   const avatarInitials = req.avatarInitials ?? generateAvatarInitials(req.name)
 
@@ -55,6 +63,16 @@ export const createUserService = async (request: CreateUserRequest): Promise<Use
       status: req.status ?? 'active'
     }
   })
+
+  await logActivity({
+    category: 'user',
+    action: 'USER_CREATED',
+    description: `Membuat user ${user.name} (${ROLE_LABEL[user.role] ?? user.role})`,
+    orgUnitName: orgUnit?.name ?? null,
+    targetId: user.id,
+    metadata: { email: user.email, role: user.role, status: user.status, ssoOnly: !req.password }
+  })
+
   return toUserResponse(user)
 }
 
@@ -126,7 +144,44 @@ export const updateUserService = async (
   }
 
   const updated = await prismaClient.user.update({ where: { id }, data })
+  await logUserUpdate(user, updated, !!req.password, isSelf)
   return toUserResponse(updated)
+}
+
+type UserRow = { id: string; name: string; email: string; role: string; orgUnitId: string | null; status: string; isLocked: boolean }
+
+/** Catat perubahan user: buka kunci dicatat terpisah, sisanya satu baris berisi diff. */
+async function logUserUpdate(before: UserRow, after: UserRow, passwordChanged: boolean, isSelf: boolean) {
+  // Selalu dicari (bukan hanya saat unit berubah) — kolom orgUnitName log butuh nama, bukan id.
+  const units = await orgUnitNames([before.orgUnitId, after.orgUnitId])
+  const unitName = (id: string | null) => (id ? (units.get(id) ?? id) : null)
+
+  const changes: FieldChange[] = []
+  const track = (field: string, b: string | null, a: string | null) => {
+    if (b !== a) changes.push({ field, before: b, after: a })
+  }
+  track('Nama', before.name, after.name)
+  track('Email', before.email, after.email)
+  track('Role', ROLE_LABEL[before.role] ?? before.role, ROLE_LABEL[after.role] ?? after.role)
+  track('Unit', unitName(before.orgUnitId), unitName(after.orgUnitId))
+  track('Status', before.status, after.status)
+  if (passwordChanged) changes.push({ field: 'Password', before: null, after: isSelf ? 'diganti' : 'direset admin' })
+  if (!before.isLocked && after.isLocked) changes.push({ field: 'Kunci akun', before: 'tidak', after: 'ya' })
+
+  const base = { category: 'user' as const, targetId: after.id, orgUnitName: unitName(after.orgUnitId) }
+
+  if (before.isLocked && !after.isLocked) {
+    await logActivity({ ...base, action: 'USER_UNLOCKED', description: `Membuka kunci akun ${after.name}` })
+  }
+  if (changes.length === 0) return
+
+  const ownPassword = isSelf && passwordChanged
+  await logActivity({
+    ...base,
+    action: ownPassword ? 'USER_PASSWORD_CHANGED' : 'USER_UPDATED',
+    description: ownPassword ? 'Mengganti password akun sendiri' : isSelf ? 'Mengubah profil sendiri' : `Mengubah user ${after.name}`,
+    metadata: { changes }
+  })
 }
 
 export const deleteUserService = async (id: string): Promise<{ message: string }> => {
@@ -166,5 +221,14 @@ export const deleteUserService = async (id: string): Promise<{ message: string }
     }
     throw e
   }
+
+  await logActivity({
+    category: 'user',
+    action: 'USER_DELETED',
+    description: `Menghapus user ${user.name} (${ROLE_LABEL[user.role] ?? user.role})`,
+    targetId: user.id,
+    metadata: { email: user.email, role: user.role }
+  })
+
   return { message: 'User berhasil dihapus' }
 }

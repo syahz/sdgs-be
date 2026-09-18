@@ -10,7 +10,8 @@ import {
   getSubmissionCommentsController,
   addCommentController,
   deleteSubmissionController,
-  deleteFacultySubmissionsController
+  deleteFacultySubmissionsController,
+  rollbackFacultySubmissionsController
 } from '../../controller/submission-controller'
 import { authRequired, requireRole } from '../../middleware/auth-middleware'
 
@@ -21,6 +22,9 @@ router.use(authRequired)
 // Hapus (super_admin) — didaftarkan SEBELUM '/:id' agar '/faculty/..' tak
 // tertangkap sebagai :id. Per-fakultas hapus semua SDG unit utk 1 tahun.
 router.delete('/faculty/:orgUnitId', requireRole('super_admin'), deleteFacultySubmissionsController)
+
+// Rollback semua submission unit (periode aktif) ke admin unit — validator + super_admin.
+router.post('/faculty/:orgUnitId/rollback', requireRole('validator', 'super_admin'), rollbackFacultySubmissionsController)
 
 // List & detail — all authenticated roles
 router.get('/', getSubmissionsController)

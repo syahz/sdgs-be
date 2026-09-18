@@ -77,6 +77,7 @@ enum SubmissionEvent {
   resubmitted
   approved
   rejected
+  rolled_back // dikembalikan validator ke admin unit (status → draft, catatan validator dihapus)
 }
 
 // ─────────────── MASTER: ORG UNIT (fakultas/direktorat/unit) ───────────────
@@ -281,6 +282,50 @@ model UniversityRecordAudit {
   @@index([createdAt])
   @@index([actorId])
   @@map("university_record_audits")
+}
+
+// ─────────────── ACTIVITY LOG (jejak aktivitas SELURUH user, append-only) ───────────────
+// Feed tunggal untuk tab Activity Log super admin: login/logout, draft & submit
+// unit, aksi validator, rollback, perubahan data universitas, user, unit kerja,
+// dan pengaturan. Sama seperti UniversityRecordAudit: pelaku didenormalisasi dan
+// TANPA FK, supaya log tetap terbaca (dan tak memblok hapus user) walau user,
+// unit, atau submission-nya sudah dihapus. Baris tidak pernah di-update/hapus.
+//
+// `category` & `action` sengaja String, bukan enum: daftar aksi bertambah seiring
+// fitur, dan menambah nilai enum Postgres butuh migrasi. Nilai sahnya dijaga di
+// src/model/activity-log-model.ts.
+
+model ActivityLog {
+  id String @id @default(uuid())
+
+  category String // auth | submission | review | university_record | user | org_unit | settings
+  action   String // LOGIN, SUBMISSION_DRAFT_SAVED, REVIEW_APPROVED, ...
+
+  // pelaku — null actorId = sistem (cron) atau percobaan login tanpa akun
+  actorId    String?
+  actorName  String
+  actorRole  String
+  actorEmail String?
+
+  // konteks objek (opsional, tergantung aksi)
+  orgUnitName String?
+  sdgId       Int?
+  year        Int?
+  targetId    String? // id submission / record / user / unit yang dikenai aksi
+
+  description String @db.Text // ringkasan siap tampil
+  metadata    Json   @default("{}") // detail terstruktur, mis. { changes: [...] }
+
+  // forensik
+  ipAddress String?
+  userAgent String? @db.Text
+
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([category, createdAt])
+  @@index([actorId])
+  @@map("activity_logs")
 }
 
 // ─────────────── ANNOUNCEMENT (pengumuman global, 1 aktif) ───────────────

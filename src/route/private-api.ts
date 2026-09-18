@@ -8,6 +8,7 @@ import settingsRouter from './details/settings'
 import dashboardRouter from './details/dashboard'
 import configRouter from './details/config'
 import announcementRouter from './details/announcement'
+import activityLogRouter from './details/activity-log'
 
 export const privateRouter = Router()
 
@@ -20,3 +21,4 @@ privateRouter.use('/api/settings', settingsRouter)
 privateRouter.use('/api/dashboard', dashboardRouter)
 privateRouter.use('/api/config', configRouter)
 privateRouter.use('/api/announcement', announcementRouter)
+privateRouter.use('/api/activity-logs', activityLogRouter)

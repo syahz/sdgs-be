@@ -41,25 +41,28 @@ function nameFromEmail(email: string): string {
     .join(' ')
 }
 
+// Disamakan dengan org_units di production (backup 2026-09-18), tanpa unit uji
+// (Fakultas Dummy, Fakultas Ilmu Percobaan, Fakultas simulasi, Fakultas Simulasi Sistem).
 const faculties = [
-  { name: 'Faculty of Law', abbreviation: 'FH' },
-  { name: 'Faculty of Economics and Business', abbreviation: 'FEB' },
-  { name: 'Faculty of Agriculture', abbreviation: 'FP' },
-  { name: 'Faculty of Animal Science', abbreviation: 'FAPET' },
-  { name: 'Faculty of Engineering', abbreviation: 'FT' },
-  { name: 'Faculty of Medicine', abbreviation: 'FK' },
-  { name: 'Faculty of Fisheries and Marine Science', abbreviation: 'FPIK' },
-  { name: 'Faculty of Mathematics and Natural Sciences', abbreviation: 'FMIPA' },
-  { name: 'Faculty of Agricultural Technology', abbreviation: 'FTP' },
-  { name: 'Faculty of Social and Political Sciences', abbreviation: 'FISIP' },
-  { name: 'Faculty of Administrative Sciences', abbreviation: 'FIA' },
-  { name: 'Faculty of Cultural Studies', abbreviation: 'FIB' },
-  { name: 'Faculty of Veterinary Medicine', abbreviation: 'FKH' },
-  { name: 'Faculty of Computer Science', abbreviation: 'FILKOM' },
-  { name: 'Faculty of Dentistry', abbreviation: 'FKG' },
-  { name: 'Faculty of Health Sciences', abbreviation: 'FIKES' },
-  { name: 'Faculty of Vocational Studies', abbreviation: 'Vokasi' },
-  { name: 'Postgraduate School', abbreviation: 'SPs' }
+  { name: 'Fakultas Bio-Industri Pertanian dan Kehutanan', abbreviation: 'FBiPK' },
+  { name: 'Fakultas Ekonomi dan Bisnis', abbreviation: 'FEB' },
+  { name: 'Fakultas Hukum', abbreviation: 'FH' },
+  { name: 'Fakultas Ilmu Administrasi', abbreviation: 'FIA' },
+  { name: 'Fakultas Ilmu Budaya', abbreviation: 'FIB' },
+  { name: 'Fakultas Ilmu Kesehatan', abbreviation: 'FIKES' },
+  { name: 'Fakultas Ilmu Komputer', abbreviation: 'FILKOM' },
+  { name: 'Fakultas Ilmu Sosial dan Ilmu Politik', abbreviation: 'FISIP' },
+  { name: 'Fakultas Kedokteran', abbreviation: 'FK' },
+  { name: 'Fakultas Kedokteran Gigi', abbreviation: 'FKG' },
+  { name: 'Fakultas Kedokteran Hewan', abbreviation: 'FKH' },
+  { name: 'Fakultas Perikanan dan Ilmu Kelautan', abbreviation: 'FPIK' },
+  { name: 'Fakultas Sains dan Teknologi Peternakan', abbreviation: 'FAST' },
+  { name: 'Fakultas Sains, Teknologi, dan Matematika', abbreviation: 'FSTeM' },
+  { name: 'Fakultas Teknik', abbreviation: 'FT' },
+  { name: 'Fakultas Teknologi Agroindustri dan Biosistem', abbreviation: 'FTAB' },
+  { name: 'Fakultas Vokasi', abbreviation: 'FV' },
+  { name: 'Postgraduate School', abbreviation: 'SPs' },
+  { name: 'PSDKU Kediri', abbreviation: 'UBKediri' }
 ]
 
 async function main() {

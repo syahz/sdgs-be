@@ -10,7 +10,8 @@ import {
   getSubmissionCommentsService,
   addCommentService,
   deleteSubmissionService,
-  deleteFacultySubmissionsService
+  deleteFacultySubmissionsService,
+  rollbackFacultySubmissionsService
 } from '../service/submission-service'
 import { AuditContext } from '../service/audit-log-service'
 import { UserRequest } from '../type/user-request'
@@ -23,6 +24,7 @@ function auditCtx(req: Request): AuditContext {
     actorId: user?.id ?? null,
     actorName: user?.name ?? 'Unknown',
     actorRole: user?.role ?? 'unknown',
+    actorEmail: user?.email ?? null,
     ip: req.ip ?? req.socket.remoteAddress ?? null,
     userAgent: req.headers['user-agent'] ?? null,
     reason
@@ -145,6 +147,19 @@ export const deleteFacultySubmissionsController = async (req: Request, res: Resp
     const orgUnitId = typeof rawId === 'string' ? rawId : rawId[0]
     const year = parseInt(String(req.query.year))
     const result = await deleteFacultySubmissionsService(orgUnitId, year, req.body?.pin, auditCtx(req))
+    res.status(200).json({ data: result })
+  } catch (e) {
+    next(e)
+  }
+}
+
+/** POST /submissions/faculty/:orgUnitId/rollback — kembalikan submission unit ke admin unit. */
+export const rollbackFacultySubmissionsController = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const currentUser = (req as UserRequest).user!
+    const rawId = req.params.orgUnitId
+    const orgUnitId = typeof rawId === 'string' ? rawId : rawId[0]
+    const result = await rollbackFacultySubmissionsService(orgUnitId, req.body, currentUser)
     res.status(200).json({ data: result })
   } catch (e) {
     next(e)
